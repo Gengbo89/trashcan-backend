@@ -13,6 +13,7 @@ from src.config import settings
 
 
 ARCHIVE_FORMATS = {'zip', 'tar.gz'}
+UploadItem = tuple[str, bytes, str]
 
 
 def sanitize_filename(filename: str) -> str:
@@ -93,7 +94,7 @@ class StorageService:
             'contentType': content_type,
         }
 
-    async def read_uploads(self, files: list[UploadFile], max_size: int) -> list[tuple[str, bytes, str]]:
+    async def read_uploads(self, files: list[UploadFile], max_size: int) -> list[UploadItem]:
         items = []
         total_size = 0
         for file in files:
@@ -113,7 +114,7 @@ class StorageService:
             items.append((sanitize_filename(file.filename or 'upload.bin'), data, file.content_type or 'application/octet-stream'))
         return items
 
-    def build_archive(self, items: list[tuple[str, bytes, str]], archive_format: str) -> tuple[str, bytes, str]:
+    def build_archive(self, items: list[UploadItem], archive_format: str) -> tuple[str, bytes, str]:
         if archive_format not in ARCHIVE_FORMATS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,18 +142,25 @@ class StorageService:
 
         return archive_name, buffer.getvalue(), content_type
 
-    async def upload_files(
+    def upload_items(
         self,
-        files: list[UploadFile],
+        items: list[UploadItem],
         target_dir: str,
         max_size: int,
         archive_format: str = 'zip',
+        force_archive: bool = False,
     ) -> dict:
-        if not files:
+        if not items:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No file uploaded')
 
-        items = await self.read_uploads(files, max_size)
-        if len(items) == 1:
+        total_size = sum(len(data) for _, data, _ in items)
+        if total_size > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f'Upload exceeds {max_size} bytes',
+            )
+
+        if len(items) == 1 and not force_archive:
             filename, data, content_type = items[0]
             result = self.upload_bytes(data, filename, content_type, target_dir)
             result['mode'] = 'single'
@@ -174,6 +182,20 @@ class StorageService:
             }
         )
         return result
+
+    async def upload_files(
+        self,
+        files: list[UploadFile],
+        target_dir: str,
+        max_size: int,
+        archive_format: str = 'zip',
+    ) -> dict:
+        return self.upload_items(
+            items=await self.read_uploads(files, max_size),
+            target_dir=target_dir,
+            max_size=max_size,
+            archive_format=archive_format,
+        )
 
 
 storage_service = StorageService()
