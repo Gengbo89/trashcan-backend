@@ -64,6 +64,21 @@ Copy `.env.example` to `.env` and set real values on the server. `PRESIGNED_URL_
 
 Important: do not put RustFS admin credentials in the mini program. The mini program should only call this backend domain, for example `https://trashcan.gengbo.top/tools/upload`.
 
+
+## WeChat Login & Permissions
+
+Set these environment variables in production:
+
+```env
+WECHAT_APPID=your-mini-program-appid
+WECHAT_SECRET=your-mini-program-secret
+JWT_SECRET=use-a-long-random-string
+ADMIN_OPENIDS=openid1,openid2
+DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
+```
+
+The first logged-in user is also promoted to admin automatically, which is convenient for initial setup. Admins can open the mini program's `我的 -> 权限管理` page to enable or disable modules for each user. The upload APIs require the `file_transfer` module permission.
+
 ## Deploy Notes
 
 1. Point `trashcan.gengbo.top` to this service through Nginx/Caddy/Ingress.

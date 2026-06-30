@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     cors_origins: str = "*"
 
+    wechat_appid: str = ""
+    wechat_secret: str = Field(default="", repr=False)
+    jwt_secret: str = Field(default="change-me", repr=False)
+    admin_openids: str = ""
+    database_url: str = "postgresql://trashcan:trashcan@127.0.0.1:5432/trashcan"
+
     rustfs_endpoint_url: str = "https://rustfs.gengbo.top"
     rustfs_access_key: str = Field(default="", repr=False)
     rustfs_secret_key: str = Field(default="", repr=False)
@@ -27,6 +33,10 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @cached_property
+    def admin_openid_set(self) -> set[str]:
+        return {item.strip() for item in self.admin_openids.split(",") if item.strip()}
 
 
 settings = Settings()

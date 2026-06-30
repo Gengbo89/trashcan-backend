@@ -4,12 +4,13 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from src.config import settings
+from src.services.auth import require_module
 from src.services.storage import storage_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_module('file_transfer'))])
 SESSION_ROOT = Path(tempfile.gettempdir()) / 'trashcan-upload-sessions'
 
 
