@@ -203,7 +203,7 @@ def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str,
 
 def require_module(module: str):
     def dependency(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-        if user['role'] == 'admin' or user['permissions'].get(module):
+        if user['permissions'].get(module):
             return user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Permission denied')
 
