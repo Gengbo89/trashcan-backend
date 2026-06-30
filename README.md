@@ -5,8 +5,8 @@ FastAPI backend for the WeChat Mini Program tool collection. The first supported
 ## Features
 
 - `GET /health` health check
-- `POST /tools/upload` upload one file, default max size 10 MB
-- Uploads to the configured RustFS bucket root by default
+- `POST /tools/upload` upload one or more files, default max size 10 MB per request
+- Uploads one file directly, or archives multiple files as `zip`/`tar.gz` before uploading
 - Returns `downloadUrl` as a presigned temporary link for the mini program to display/copy
 - Keeps RustFS credentials on the server side only
 
@@ -34,8 +34,10 @@ curl http://127.0.0.1:8000/health
 POST /tools/upload
 Content-Type: multipart/form-data
 
-file: <binary>
+file: <binary>       # single file
+files: <binary>[]   # multiple files, same field name repeated
 maxSize: 10485760
+archiveFormat: zip | tar.gz
 ```
 
 Response:
@@ -49,7 +51,9 @@ Response:
     "downloadUrlExpiresIn": 3600,
     "downloadUrlExpiresAt": "2026-06-30T12:00:00+00:00",
     "objectKey": "1700000000-file.pdf",
-    "bucket": "<bucket>"
+    "bucket": "<bucket>",
+    "mode": "single | archive",
+    "archiveFormat": "zip"
   }
 }
 ```
