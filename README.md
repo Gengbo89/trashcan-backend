@@ -1,13 +1,13 @@
 # Trashcan Backend
 
-FastAPI backend for the WeChat Mini Program tool collection. The first supported tool uploads a file from the mini program to RustFS/S3-compatible object storage and returns a public download URL.
+FastAPI backend for the WeChat Mini Program tool collection. The first supported tool uploads a file from the mini program to RustFS/S3-compatible object storage and returns a 1-hour presigned download URL.
 
 ## Features
 
 - `GET /health` health check
 - `POST /tools/upload` upload one file, default max size 10 MB
-- Uploads to a configurable RustFS bucket and the `trashcan/` object prefix by default
-- Returns `downloadUrl` for the mini program to display/copy
+- Uploads to the configured RustFS bucket root by default
+- Returns `downloadUrl` as a presigned temporary link for the mini program to display/copy
 - Keeps RustFS credentials on the server side only
 
 ## Quick Start
@@ -35,7 +35,6 @@ POST /tools/upload
 Content-Type: multipart/form-data
 
 file: <binary>
-dir: trashcan
 maxSize: 10485760
 ```
 
@@ -46,8 +45,10 @@ Response:
   "code": 200,
   "success": true,
   "data": {
-    "downloadUrl": "https://rustfs.gengbo.top/<bucket>/trashcan/1700000000-file.pdf",
-    "objectKey": "trashcan/1700000000-file.pdf",
+    "downloadUrl": "https://rustfs.gengbo.top/<bucket>/1700000000-file.pdf?X-Amz-Algorithm=...",
+    "downloadUrlExpiresIn": 3600,
+    "downloadUrlExpiresAt": "2026-06-30T12:00:00+00:00",
+    "objectKey": "1700000000-file.pdf",
     "bucket": "<bucket>"
   }
 }
@@ -55,7 +56,7 @@ Response:
 
 ## Environment
 
-Copy `.env.example` to `.env` and set real values on the server.
+Copy `.env.example` to `.env` and set real values on the server. `PRESIGNED_URL_EXPIRES_SECONDS=3600` makes returned download links valid for 1 hour. Leave `DEFAULT_UPLOAD_DIR` empty to upload directly to the bucket root.
 
 Important: do not put RustFS admin credentials in the mini program. The mini program should only call this backend domain, for example `https://trashcan.gengbo.top/tools/upload`.
 

@@ -15,12 +15,12 @@ class Settings(BaseSettings):
     rustfs_access_key: str = Field(default="", repr=False)
     rustfs_secret_key: str = Field(default="", repr=False)
     rustfs_bucket: str = "trashcan"
-    rustfs_public_base_url: str = "https://rustfs.gengbo.top/trashcan"
     rustfs_region: str = "us-east-1"
     rustfs_addressing_style: str = "path"
 
     max_upload_size_bytes: int = 10 * 1024 * 1024
-    default_upload_dir: str = "trashcan"
+    default_upload_dir: str = ""
+    presigned_url_expires_seconds: int = 3600
 
     @cached_property
     def cors_origin_list(self) -> list[str]:

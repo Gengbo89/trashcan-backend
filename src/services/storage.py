@@ -1,6 +1,6 @@
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from urllib.parse import quote
 
 import boto3
 from botocore.client import Config
@@ -18,12 +18,6 @@ def normalize_dir(target_dir: str) -> str:
     normalized = target_dir.replace('\\', '/')
     parts = [part for part in normalized.split('/') if part and part not in {'.', '..'}]
     return '/'.join(parts)
-
-
-def build_public_url(object_key: str) -> str:
-    base = settings.rustfs_public_base_url.rstrip('/')
-    encoded_key = '/'.join(quote(part) for part in object_key.split('/'))
-    return f'{base}/{encoded_key}'
 
 
 class StorageService:
@@ -58,8 +52,21 @@ class StorageService:
             ContentType=content_type,
         )
 
+        expires_in = settings.presigned_url_expires_seconds
+        download_url = self.client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={
+                'Bucket': settings.rustfs_bucket,
+                'Key': object_key,
+            },
+            ExpiresIn=expires_in,
+        )
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+
         return {
-            'downloadUrl': build_public_url(object_key),
+            'downloadUrl': download_url,
+            'downloadUrlExpiresIn': expires_in,
+            'downloadUrlExpiresAt': expires_at.isoformat(),
             'objectKey': object_key,
             'bucket': settings.rustfs_bucket,
             'size': len(data),
