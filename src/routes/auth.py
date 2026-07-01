@@ -1,20 +1,22 @@
 from fastapi import APIRouter, Depends, Query
 
 from src.services.auth import (
-    GlobalPermissionPayload,
+    GroupPermissionPayload,
     LoginPayload,
     MODULES,
     PermissionPayload,
     ProfilePayload,
+    UserGroupPayload,
     create_token,
     ensure_user,
     fetch_wechat_openid,
     get_current_user,
-    get_global_permission_settings,
+    list_permission_groups,
     list_users,
     require_admin,
-    set_global_permission_settings,
+    set_group_permissions,
     set_permissions,
+    set_user_group,
     update_profile,
 )
 
@@ -32,7 +34,7 @@ def wechat_login(payload: LoginPayload):
             'token': create_token(user['openid'], user['role']),
             'user': user,
             'modules': MODULES,
-            'globalPermissionSettings': get_global_permission_settings(),
+            'permissionGroups': list_permission_groups(),
         },
     }
 
@@ -42,7 +44,7 @@ def me(user=Depends(get_current_user)):
     return {
         'code': 200,
         'success': True,
-        'data': {'user': user, 'modules': MODULES, 'globalPermissionSettings': get_global_permission_settings()},
+        'data': {'user': user, 'modules': MODULES, 'permissionGroups': list_permission_groups()},
     }
 
 
@@ -52,7 +54,7 @@ def update_me_profile(payload: ProfilePayload, user=Depends(get_current_user)):
     return {
         'code': 200,
         'success': True,
-        'data': {'user': updated_user, 'modules': MODULES, 'globalPermissionSettings': get_global_permission_settings()},
+        'data': {'user': updated_user, 'modules': MODULES, 'permissionGroups': list_permission_groups()},
     }
 
 
@@ -64,7 +66,7 @@ def modules(user=Depends(get_current_user)):
         'data': {
             'modules': MODULES,
             'permissions': user['permissions'],
-            'globalPermissionSettings': get_global_permission_settings(),
+            'permissionGroups': list_permission_groups(),
         },
     }
 
@@ -77,21 +79,27 @@ def admin_users(keyword: str = Query(default=''), _=Depends(require_admin)):
         'data': {
             'users': list_users(keyword),
             'modules': MODULES,
-            'globalPermissionSettings': get_global_permission_settings(),
+            'permissionGroups': list_permission_groups(),
         },
     }
 
 
-@router.put('/admin/global-permissions')
-def admin_set_global_permissions(payload: GlobalPermissionPayload, _=Depends(require_admin)):
+@router.put('/admin/permission-groups/{group_key}/permissions')
+def admin_set_group_permissions(group_key: str, payload: GroupPermissionPayload, _=Depends(require_admin)):
     return {
         'code': 200,
         'success': True,
         'data': {
-            'globalPermissionSettings': set_global_permission_settings(payload.globalFirst, payload.permissions),
+            'permissionGroup': set_group_permissions(group_key, payload.permissions),
+            'permissionGroups': list_permission_groups(),
             'modules': MODULES,
         },
     }
+
+
+@router.put('/admin/users/{openid}/group')
+def admin_set_user_group(openid: str, payload: UserGroupPayload, _=Depends(require_admin)):
+    return {'code': 200, 'success': True, 'data': {'user': set_user_group(openid, payload.groupKey), 'modules': MODULES}}
 
 
 @router.put('/admin/users/{openid}/permissions')

@@ -25,6 +25,12 @@ MODULES = {
 }
 DEFAULT_ENABLED_MODULES = {'file_transfer'}
 TOKEN_TTL_SECONDS = 30 * 24 * 3600
+DEFAULT_PERMISSION_GROUP = 'T2'
+PERMISSION_GROUPS = {
+    'T0': {'name': 'T0 全部权限', 'editable': False},
+    'T1': {'name': 'T1 自定义权限', 'editable': True},
+    'T2': {'name': 'T2 默认权限', 'editable': True},
+}
 
 
 class LoginPayload(BaseModel):
@@ -37,9 +43,12 @@ class PermissionPayload(BaseModel):
     permissions: dict[str, bool]
 
 
-class GlobalPermissionPayload(BaseModel):
-    globalFirst: bool
+class GroupPermissionPayload(BaseModel):
     permissions: dict[str, bool]
+
+
+class UserGroupPayload(BaseModel):
+    groupKey: str
 
 
 class ProfilePayload(BaseModel):
@@ -65,6 +74,7 @@ def init_db() -> None:
                 updated_at BIGINT NOT NULL
             )"""
         )
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_group TEXT DEFAULT 'T2'")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS module_permissions (
                 openid TEXT NOT NULL REFERENCES users(openid) ON DELETE CASCADE,
@@ -96,6 +106,34 @@ def init_db() -> None:
                 'INSERT INTO global_module_permissions(module, enabled) VALUES (%s, %s) ON CONFLICT(module) DO NOTHING',
                 (module, module in DEFAULT_ENABLED_MODULES),
             )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS permission_groups (
+                group_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                editable BOOLEAN NOT NULL,
+                updated_at BIGINT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS permission_group_modules (
+                group_key TEXT NOT NULL REFERENCES permission_groups(group_key) ON DELETE CASCADE,
+                module TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                PRIMARY KEY(group_key, module)
+            )"""
+        )
+        for group_key, group in PERMISSION_GROUPS.items():
+            conn.execute(
+                'INSERT INTO permission_groups(group_key, name, editable, updated_at) VALUES (%s, %s, %s, %s) ON CONFLICT(group_key) DO UPDATE SET name = EXCLUDED.name, editable = EXCLUDED.editable',
+                (group_key, group['name'], group['editable'], now),
+            )
+            for module in MODULES:
+                enabled = True if group_key == 'T0' else module in DEFAULT_ENABLED_MODULES
+                conn.execute(
+                    'INSERT INTO permission_group_modules(group_key, module, enabled) VALUES (%s, %s, %s) ON CONFLICT(group_key, module) DO NOTHING',
+                    (group_key, module, enabled),
+                )
+        conn.execute("UPDATE users SET permission_group = 'T2' WHERE permission_group IS NULL OR permission_group = ''")
 
 
 def b64url(data: bytes) -> str:
@@ -154,46 +192,59 @@ def fetch_wechat_openid(code: str) -> str:
     return data['openid']
 
 
-def get_global_permission_settings() -> dict[str, Any]:
+def get_group_permissions(group_key: str) -> dict[str, bool]:
+    if group_key == 'T0':
+        return {module: True for module in MODULES}
     with get_conn() as conn:
-        setting = conn.execute('SELECT global_first FROM global_permission_settings WHERE id = TRUE').fetchone()
-        rows = conn.execute('SELECT module, enabled FROM global_module_permissions').fetchall()
-    saved = {row['module']: bool(row['enabled']) for row in rows}
-    return {
-        'globalFirst': bool(setting and setting['global_first']),
-        'permissions': {module: saved.get(module, module in DEFAULT_ENABLED_MODULES) for module in MODULES},
-    }
-
-
-def set_global_permission_settings(global_first: bool, permissions: dict[str, bool]) -> dict[str, Any]:
-    now = int(time.time())
-    with get_conn() as conn:
-        conn.execute(
-            'INSERT INTO global_permission_settings(id, global_first, updated_at) VALUES (TRUE, %s, %s) ON CONFLICT(id) DO UPDATE SET global_first = EXCLUDED.global_first, updated_at = EXCLUDED.updated_at',
-            (global_first, now),
-        )
-        for module, enabled in permissions.items():
-            if module not in MODULES:
-                continue
-            conn.execute(
-                'INSERT INTO global_module_permissions(module, enabled) VALUES (%s, %s) ON CONFLICT(module) DO UPDATE SET enabled = EXCLUDED.enabled',
-                (module, enabled),
-            )
-    return get_global_permission_settings()
-
-
-def get_personal_permissions(openid: str) -> dict[str, bool]:
-    with get_conn() as conn:
-        rows = conn.execute('SELECT module, enabled FROM module_permissions WHERE openid = %s', (openid,)).fetchall()
+        rows = conn.execute('SELECT module, enabled FROM permission_group_modules WHERE group_key = %s', (group_key,)).fetchall()
     saved = {row['module']: bool(row['enabled']) for row in rows}
     return {module: saved.get(module, module in DEFAULT_ENABLED_MODULES) for module in MODULES}
 
 
+def list_permission_groups() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute('SELECT * FROM permission_groups ORDER BY group_key ASC').fetchall()
+        counts = conn.execute('SELECT permission_group, COUNT(*) AS count FROM users GROUP BY permission_group').fetchall()
+    count_map = {row['permission_group']: int(row['count']) for row in counts}
+    return [
+        {
+            'key': row['group_key'],
+            'name': row['name'],
+            'editable': bool(row['editable']),
+            'permissions': get_group_permissions(row['group_key']),
+            'userCount': count_map.get(row['group_key'], 0),
+        }
+        for row in rows
+    ]
+
+
+def get_permission_group(group_key: str) -> dict[str, Any]:
+    groups = {group['key']: group for group in list_permission_groups()}
+    return groups.get(group_key) or groups[DEFAULT_PERMISSION_GROUP]
+
+
+def set_group_permissions(group_key: str, permissions: dict[str, bool]) -> dict[str, Any]:
+    group = get_permission_group(group_key)
+    if not group['editable']:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Permission group is readonly')
+    now = int(time.time())
+    with get_conn() as conn:
+        conn.execute('UPDATE permission_groups SET updated_at = %s WHERE group_key = %s', (now, group_key))
+        for module, enabled in permissions.items():
+            if module not in MODULES:
+                continue
+            conn.execute(
+                'INSERT INTO permission_group_modules(group_key, module, enabled) VALUES (%s, %s, %s) ON CONFLICT(group_key, module) DO UPDATE SET enabled = EXCLUDED.enabled',
+                (group_key, module, enabled),
+            )
+    return get_permission_group(group_key)
+
+
 def get_permissions(openid: str) -> dict[str, bool]:
-    global_settings = get_global_permission_settings()
-    if global_settings['globalFirst']:
-        return global_settings['permissions']
-    return get_personal_permissions(openid)
+    with get_conn() as conn:
+        row = conn.execute('SELECT permission_group FROM users WHERE openid = %s', (openid,)).fetchone()
+    group_key = row['permission_group'] if row and row['permission_group'] in PERMISSION_GROUPS else DEFAULT_PERMISSION_GROUP
+    return get_group_permissions(group_key)
 
 
 def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -202,8 +253,9 @@ def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
         'nickName': row['nickname'],
         'avatarUrl': row['avatar_url'],
         'role': row['role'],
+        'permissionGroup': row.get('permission_group') or DEFAULT_PERMISSION_GROUP,
+        'permissionGroupName': get_permission_group(row.get('permission_group') or DEFAULT_PERMISSION_GROUP)['name'],
         'permissions': get_permissions(row['openid']),
-        'personalPermissions': get_personal_permissions(row['openid']),
     }
 
 
@@ -221,8 +273,8 @@ def ensure_user(openid: str, nickname: str = '', avatar_url: str = '') -> dict[s
             )
         else:
             conn.execute(
-                'INSERT INTO users(openid, nickname, avatar_url, role, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)',
-                (openid, nickname, avatar_url, role, now, now),
+                'INSERT INTO users(openid, nickname, avatar_url, role, permission_group, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)',
+                (openid, nickname, avatar_url, role, DEFAULT_PERMISSION_GROUP, now, now),
             )
             for module in MODULES:
                 conn.execute(
@@ -273,6 +325,21 @@ def set_permissions(openid: str, permissions: dict[str, bool]) -> dict[str, Any]
                 'INSERT INTO module_permissions(openid, module, enabled) VALUES (%s, %s, %s) ON CONFLICT(openid, module) DO UPDATE SET enabled = EXCLUDED.enabled',
                 (openid, module, enabled),
             )
+    return ensure_user(openid)
+
+
+def set_user_group(openid: str, group_key: str) -> dict[str, Any]:
+    if group_key not in PERMISSION_GROUPS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid permission group')
+    now = int(time.time())
+    with get_conn() as conn:
+        user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+        conn.execute(
+            'UPDATE users SET permission_group = %s, updated_at = %s WHERE openid = %s',
+            (group_key, now, openid),
+        )
     return ensure_user(openid)
 
 
