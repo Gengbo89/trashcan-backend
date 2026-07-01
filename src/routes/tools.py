@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
+from src.services.analytics import record_event
 from src.config import settings
 from src.services.auth import require_module
 from src.services.storage import storage_service
@@ -149,11 +150,12 @@ def fetch_remote_image(url: str) -> tuple[str, bytes, str]:
     return current_url, data, content_type
 
 
-@router.post('/image-proxy', dependencies=[Depends(require_module('image_crop'))])
-def proxy_image(payload: ImageProxyPayload):
+@router.post('/image-proxy')
+def proxy_image(payload: ImageProxyPayload, user=Depends(require_module('image_crop'))):
     final_url, data, content_type = fetch_remote_image(payload.url)
     filename = filename_from_url(final_url, content_type)
     result = storage_service.upload_bytes(data, filename, content_type, IMAGE_PROXY_DIR)
+    record_event(user['openid'], 'image_crop', 'image_proxy', True, metadata={'size': len(data)})
     return {
         'code': 200,
         'success': True,
@@ -212,8 +214,12 @@ def convert_word_to_pdf(input_path: Path, output_dir: Path) -> Path:
     return output_path
 
 
-@router.post('/document-convert', dependencies=[Depends(require_module('document_convert'))])
-async def convert_document(file: UploadFile = File(...), target_format: str = Form(alias='targetFormat')):
+@router.post('/document-convert')
+async def convert_document(
+    file: UploadFile = File(...),
+    target_format: str = Form(alias='targetFormat'),
+    user=Depends(require_module('document_convert')),
+):
     source_name = file.filename or 'document'
     source_ext = file_suffix(source_name)
     target_format = target_format.lower().strip()
@@ -248,6 +254,7 @@ async def convert_document(file: UploadFile = File(...), target_format: str = Fo
         if len(output_data) > settings.max_upload_size_bytes:
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Converted document is too large')
         result = storage_service.upload_bytes(output_data, output_name, content_type, DOCUMENT_CONVERT_DIR)
+    record_event(user['openid'], 'document_convert', 'convert', True, metadata={'targetFormat': target_format, 'size': len(output_data)})
 
     return {
         'code': 200,
@@ -264,8 +271,8 @@ async def convert_document(file: UploadFile = File(...), target_format: str = Fo
     }
 
 
-@router.post('/qrcode/generate', dependencies=[Depends(require_module('qrcode'))])
-def generate_qrcode(payload: QrCodePayload):
+@router.post('/qrcode/generate')
+def generate_qrcode(payload: QrCodePayload, user=Depends(require_module('qrcode'))):
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QR content is required')
@@ -284,6 +291,7 @@ def generate_qrcode(payload: QrCodePayload):
     png.save(buffer, format='PNG')
     data = buffer.getvalue()
     result = storage_service.upload_bytes(data, f'qrcode-{uuid4().hex}.png', 'image/png', QRCODE_DIR)
+    record_event(user['openid'], 'qrcode', 'generate', True)
     return {
         'code': 200,
         'success': True,
@@ -296,13 +304,14 @@ def generate_qrcode(payload: QrCodePayload):
     }
 
 
-@router.post('/upload', dependencies=[Depends(require_module('file_transfer'))])
+@router.post('/upload')
 async def upload_tool_file(
     file: UploadFile | None = File(default=None),
     files: list[UploadFile] | None = File(default=None),
     upload_dir: str = Form(default='', alias='dir'),
     max_size_from_client: int | None = Form(default=None, alias='maxSize'),
     archive_format: str = Form(default='zip', alias='archiveFormat'),
+    user=Depends(require_module('file_transfer')),
 ):
     max_size = min(max_size_from_client or settings.max_upload_size_bytes, settings.max_upload_size_bytes)
     target_dir = upload_dir.strip().strip('/') or settings.default_upload_dir
@@ -314,6 +323,7 @@ async def upload_tool_file(
         max_size=max_size,
         archive_format=archive_format,
     )
+    record_event(user['openid'], 'file_transfer', 'upload', True, metadata={'mode': result.get('mode'), 'size': result.get('size')})
 
     return {
         'code': 200,
@@ -322,8 +332,8 @@ async def upload_tool_file(
     }
 
 
-@router.post('/upload-session', dependencies=[Depends(require_module('file_transfer'))])
-def create_upload_session():
+@router.post('/upload-session')
+def create_upload_session(user=Depends(require_module('file_transfer'))):
     SESSION_ROOT.mkdir(parents=True, exist_ok=True)
     session_id = uuid4().hex
     session_dir = get_session_dir(session_id)
@@ -336,11 +346,12 @@ def create_upload_session():
     }
 
 
-@router.post('/upload-session/file', dependencies=[Depends(require_module('file_transfer'))])
+@router.post('/upload-session/file')
 async def upload_session_file(
     session_id: str = Form(alias='sessionId'),
     file: UploadFile = File(...),
     max_size_from_client: int | None = Form(default=None, alias='maxSize'),
+    user=Depends(require_module('file_transfer')),
 ):
     max_size = min(max_size_from_client or settings.max_upload_size_bytes, settings.max_upload_size_bytes)
     session_dir = get_session_dir(session_id)
@@ -381,12 +392,13 @@ async def upload_session_file(
     }
 
 
-@router.post('/upload-session/complete', dependencies=[Depends(require_module('file_transfer'))])
+@router.post('/upload-session/complete')
 def complete_upload_session(
     session_id: str = Form(alias='sessionId'),
     archive_format: str = Form(default='zip', alias='archiveFormat'),
     upload_dir: str = Form(default='', alias='dir'),
     max_size_from_client: int | None = Form(default=None, alias='maxSize'),
+    user=Depends(require_module('file_transfer')),
 ):
     max_size = min(max_size_from_client or settings.max_upload_size_bytes, settings.max_upload_size_bytes)
     target_dir = upload_dir.strip().strip('/') or settings.default_upload_dir
@@ -412,6 +424,7 @@ def complete_upload_session(
             archive_format=archive_format,
             force_archive=True,
         )
+        record_event(user['openid'], 'file_transfer', 'upload_archive', True, metadata={'fileCount': result.get('fileCount'), 'size': result.get('size')})
     finally:
         shutil.rmtree(session_dir, ignore_errors=True)
 

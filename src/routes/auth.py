@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
+from src.services.analytics import record_event
 from src.services.auth import (
     GroupPermissionPayload,
     LoginPayload,
@@ -25,6 +26,7 @@ router = APIRouter()
 def wechat_login(payload: LoginPayload):
     openid = fetch_wechat_openid(payload.code)
     user = ensure_user(openid, payload.nickName or '', payload.avatarUrl or '')
+    record_event(user['openid'], 'auth', 'login', True)
     return {
         'code': 200,
         'success': True,

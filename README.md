@@ -72,6 +72,7 @@ Set these environment variables in production:
 ```env
 WECHAT_APPID=your-mini-program-appid
 WECHAT_SECRET=your-mini-program-secret
+WECHAT_MESSAGE_TEMPLATE_ID=yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus
 JWT_SECRET=use-a-long-random-string
 ADMIN_OPENIDS=openid1,openid2
 DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
@@ -79,12 +80,19 @@ DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
 
 The first logged-in user is also promoted to admin automatically, which is convenient for initial setup. Admins can open the mini program's `我的 -> 权限管理` page to enable or disable modules for each user. The upload APIs require the `file_transfer` module permission.
 
+## Message Reminders
+
+In-app messages are pushed through WebSocket at `/messages/ws` when the user is online. If an admin replies while the user is offline, the backend falls back to WeChat subscribe messages.
+
+Offline reminders use template `yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus` by default. The current payload uses `time2` for the send time, `number1` for the user's unread message count, and `thing3` for `您有新的未读消息，请注意查收`.
+
 ## Deploy Notes
 
 1. Point `trashcan.gengbo.top` to this service through Nginx/Caddy/Ingress.
 2. Configure HTTPS, because WeChat Mini Programs require HTTPS request domains.
 3. Add `https://trashcan.gengbo.top` to the mini program legal request/upload domain list in WeChat MP admin.
-4. Set `config.baseUrl = 'https://trashcan.gengbo.top'` and `config.isMock = false` in the mini program when switching to real backend.
+4. Add `wss://trashcan.gengbo.top` to the mini program legal socket domain list in WeChat MP admin.
+5. Set `config.baseUrl = 'https://trashcan.gengbo.top'` and `config.isMock = false` in the mini program when switching to real backend.
 
 ## Docker
 

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     wechat_appid: str = ""
     wechat_secret: str = Field(default="", repr=False)
-    wechat_message_template_id: str = ""
+    wechat_message_template_id: str = "yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus"
     jwt_secret: str = Field(default="change-me", repr=False)
     admin_openids: str = ""
     database_url: str = "postgresql://trashcan:trashcan@127.0.0.1:5432/trashcan"

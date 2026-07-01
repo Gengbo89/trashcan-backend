@@ -151,8 +151,6 @@ def create_message(user: dict[str, Any], content: str, target_openid: str | None
             RETURNING *""",
             (user_openid, user['openid'], sender_role, content, sender_role == 'user', sender_role == 'admin', now),
         ).fetchone()
-    if sender_role == 'admin':
-        send_subscribe_message(user_openid, content)
     return row_to_message(row)
 
 
@@ -190,6 +188,19 @@ def get_wechat_access_token() -> str:
     return data.get('access_token', '')
 
 
+def count_user_unread_messages(openid: str) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS total
+            FROM user_messages
+            WHERE user_openid = %s
+            AND sender_role = 'admin'
+            AND read_by_user = FALSE""",
+            (openid,),
+        ).fetchone()
+    return int(row['total'] or 0) if row else 0
+
+
 def send_subscribe_message(openid: str, content: str) -> None:
     if not settings.wechat_message_template_id:
         return
@@ -199,14 +210,15 @@ def send_subscribe_message(openid: str, content: str) -> None:
     access_token = get_wechat_access_token()
     if not access_token:
         return
+    unread_count = max(count_user_unread_messages(openid), 1)
     payload = {
         'touser': openid,
         'template_id': settings.wechat_message_template_id,
         'page': 'pages/message/index',
         'data': {
-            'thing1': {'value': '管理员回复'},
-            'thing2': {'value': content[:20]},
-            'time3': {'value': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())},
+            'time2': {'value': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())},
+            'number1': {'value': unread_count},
+            'thing3': {'value': '您有新的未读消息，请注意查收'},
         },
     }
     req = urllib.request.Request(
