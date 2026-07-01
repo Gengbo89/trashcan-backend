@@ -2,10 +2,12 @@ import json
 import ipaddress
 import socket
 import shutil
+import subprocess
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,10 +22,17 @@ router = APIRouter()
 SESSION_ROOT = Path(tempfile.gettempdir()) / 'trashcan-upload-sessions'
 IMAGE_PROXY_DIR = 'image-proxy'
 IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'}
+DOCUMENT_CONVERT_DIR = 'document-convert'
+QRCODE_DIR = 'qrcode'
+DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx'}
 
 
 class ImageProxyPayload(BaseModel):
     url: str
+
+
+class QrCodePayload(BaseModel):
+    text: str
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -46,6 +55,14 @@ def read_session_meta(session_dir: Path) -> list[dict]:
 
 def write_session_meta(session_dir: Path, meta: list[dict]) -> None:
     (session_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+
+
+def file_stem(filename: str) -> str:
+    return Path(filename.replace('\\', '/').split('/')[-1] or 'file').stem or 'file'
+
+
+def file_suffix(filename: str) -> str:
+    return Path(filename.replace('\\', '/').split('/')[-1]).suffix.lower()
 
 
 def assert_public_url(url: str) -> urllib.parse.ParseResult:
@@ -147,6 +164,133 @@ def proxy_image(payload: ImageProxyPayload):
             'contentType': result['contentType'],
             'expiresIn': result['downloadUrlExpiresIn'],
             'expiresAt': result['downloadUrlExpiresAt'],
+            'objectKey': result['objectKey'],
+        },
+    }
+
+
+def convert_pdf_to_docx(input_path: Path, output_path: Path) -> None:
+    try:
+        from pdf2docx import Converter
+    except ImportError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='pdf2docx is not installed') from exc
+
+    converter = Converter(str(input_path))
+    try:
+        converter.convert(str(output_path), start=0, end=None)
+    finally:
+        converter.close()
+
+
+def convert_word_to_pdf(input_path: Path, output_dir: Path) -> Path:
+    try:
+        subprocess.run(
+            [
+                settings.office_bin,
+                '--headless',
+                '--convert-to',
+                'pdf',
+                '--outdir',
+                str(output_dir),
+                str(input_path),
+            ],
+            check=True,
+            timeout=60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='soffice/libreoffice is not installed') from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail='Document conversion timed out') from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Document conversion failed') from exc
+
+    output_path = output_dir / f'{input_path.stem}.pdf'
+    if not output_path.exists():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Converted PDF was not generated')
+    return output_path
+
+
+@router.post('/document-convert', dependencies=[Depends(require_module('document_convert'))])
+async def convert_document(file: UploadFile = File(...), target_format: str = Form(alias='targetFormat')):
+    source_name = file.filename or 'document'
+    source_ext = file_suffix(source_name)
+    target_format = target_format.lower().strip()
+    if source_ext not in DOCUMENT_EXTENSIONS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only PDF, DOC and DOCX files are supported')
+    if source_ext == '.pdf' and target_format != 'docx':
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='PDF can only be converted to DOCX')
+    if source_ext in {'.doc', '.docx'} and target_format != 'pdf':
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Word files can only be converted to PDF')
+
+    data = await file.read(settings.max_upload_size_bytes + 1)
+    if len(data) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Document is too large')
+
+    with tempfile.TemporaryDirectory(prefix='trashcan-doc-convert-') as temp_dir:
+        work_dir = Path(temp_dir)
+        input_path = work_dir / f'input{source_ext}'
+        input_path.write_bytes(data)
+        if source_ext == '.pdf':
+            output_path = work_dir / f'{file_stem(source_name)}.docx'
+            convert_pdf_to_docx(input_path, output_path)
+            output_name = output_path.name
+            content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        else:
+            output_path = convert_word_to_pdf(input_path, work_dir)
+            output_name = f'{file_stem(source_name)}.pdf'
+            content_type = 'application/pdf'
+
+        output_data = output_path.read_bytes()
+        if not output_data:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Converted document is empty')
+        if len(output_data) > settings.max_upload_size_bytes:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Converted document is too large')
+        result = storage_service.upload_bytes(output_data, output_name, content_type, DOCUMENT_CONVERT_DIR)
+
+    return {
+        'code': 200,
+        'success': True,
+        'data': {
+            'downloadUrl': result['downloadUrl'],
+            'downloadUrlExpiresIn': result['downloadUrlExpiresIn'],
+            'downloadUrlExpiresAt': result['downloadUrlExpiresAt'],
+            'filename': output_name,
+            'size': len(output_data),
+            'contentType': content_type,
+            'objectKey': result['objectKey'],
+        },
+    }
+
+
+@router.post('/qrcode/generate', dependencies=[Depends(require_module('qrcode'))])
+def generate_qrcode(payload: QrCodePayload):
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QR content is required')
+    if len(text) > 2048:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QR content is too long')
+    try:
+        import qrcode
+    except ImportError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='qrcode is not installed') from exc
+
+    image = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=12, border=2)
+    image.add_data(text)
+    image.make(fit=True)
+    png = image.make_image(fill_color='black', back_color='white')
+    buffer = BytesIO()
+    png.save(buffer, format='PNG')
+    data = buffer.getvalue()
+    result = storage_service.upload_bytes(data, f'qrcode-{uuid4().hex}.png', 'image/png', QRCODE_DIR)
+    return {
+        'code': 200,
+        'success': True,
+        'data': {
+            'imageUrl': result['downloadUrl'],
+            'downloadUrlExpiresIn': result['downloadUrlExpiresIn'],
+            'downloadUrlExpiresAt': result['downloadUrlExpiresAt'],
             'objectKey': result['objectKey'],
         },
     }

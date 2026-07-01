@@ -4,3 +4,5 @@ python-multipart==0.0.20
 pydantic-settings==2.7.1
 boto3==1.35.90
 psycopg[binary]==3.2.3
+qrcode[pil]==7.4.2
+pdf2docx==0.5.8

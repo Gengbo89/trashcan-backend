@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     max_upload_size_bytes: int = 10 * 1024 * 1024
     default_upload_dir: str = ""
     presigned_url_expires_seconds: int = 3600
+    office_bin: str = "soffice"
 
     @cached_property
     def cors_origin_list(self) -> list[str]:
