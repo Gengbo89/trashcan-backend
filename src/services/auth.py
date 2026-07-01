@@ -39,10 +39,6 @@ class LoginPayload(BaseModel):
     avatarUrl: str | None = None
 
 
-class PermissionPayload(BaseModel):
-    permissions: dict[str, bool]
-
-
 class GroupPermissionPayload(BaseModel):
     permissions: dict[str, bool]
 
@@ -75,37 +71,10 @@ def init_db() -> None:
             )"""
         )
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_group TEXT DEFAULT 'T2'")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS module_permissions (
-                openid TEXT NOT NULL REFERENCES users(openid) ON DELETE CASCADE,
-                module TEXT NOT NULL,
-                enabled BOOLEAN NOT NULL,
-                PRIMARY KEY(openid, module)
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS global_permission_settings (
-                id BOOLEAN PRIMARY KEY DEFAULT TRUE,
-                global_first BOOLEAN NOT NULL DEFAULT FALSE,
-                updated_at BIGINT NOT NULL
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS global_module_permissions (
-                module TEXT PRIMARY KEY,
-                enabled BOOLEAN NOT NULL
-            )"""
-        )
+        conn.execute('DROP TABLE IF EXISTS module_permissions')
+        conn.execute('DROP TABLE IF EXISTS global_module_permissions')
+        conn.execute('DROP TABLE IF EXISTS global_permission_settings')
         now = int(time.time())
-        conn.execute(
-            'INSERT INTO global_permission_settings(id, global_first, updated_at) VALUES (TRUE, FALSE, %s) ON CONFLICT(id) DO NOTHING',
-            (now,),
-        )
-        for module in MODULES:
-            conn.execute(
-                'INSERT INTO global_module_permissions(module, enabled) VALUES (%s, %s) ON CONFLICT(module) DO NOTHING',
-                (module, module in DEFAULT_ENABLED_MODULES),
-            )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS permission_groups (
                 group_key TEXT PRIMARY KEY,
@@ -276,11 +245,6 @@ def ensure_user(openid: str, nickname: str = '', avatar_url: str = '') -> dict[s
                 'INSERT INTO users(openid, nickname, avatar_url, role, permission_group, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)',
                 (openid, nickname, avatar_url, role, DEFAULT_PERMISSION_GROUP, now, now),
             )
-            for module in MODULES:
-                conn.execute(
-                    'INSERT INTO module_permissions(openid, module, enabled) VALUES (%s, %s, %s) ON CONFLICT(openid, module) DO UPDATE SET enabled = EXCLUDED.enabled',
-                    (openid, module, module in DEFAULT_ENABLED_MODULES),
-                )
         user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
     return row_to_user(user)
 
@@ -311,21 +275,6 @@ def list_users(keyword: str = '') -> list[dict[str, Any]]:
         else:
             rows = conn.execute('SELECT * FROM users ORDER BY updated_at DESC').fetchall()
     return [row_to_user(row) for row in rows]
-
-
-def set_permissions(openid: str, permissions: dict[str, bool]) -> dict[str, Any]:
-    with get_conn() as conn:
-        user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
-        if not user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
-        for module, enabled in permissions.items():
-            if module not in MODULES:
-                continue
-            conn.execute(
-                'INSERT INTO module_permissions(openid, module, enabled) VALUES (%s, %s, %s) ON CONFLICT(openid, module) DO UPDATE SET enabled = EXCLUDED.enabled',
-                (openid, module, enabled),
-            )
-    return ensure_user(openid)
 
 
 def set_user_group(openid: str, group_key: str) -> dict[str, Any]:

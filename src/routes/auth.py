@@ -4,7 +4,6 @@ from src.services.auth import (
     GroupPermissionPayload,
     LoginPayload,
     MODULES,
-    PermissionPayload,
     ProfilePayload,
     UserGroupPayload,
     create_token,
@@ -15,7 +14,6 @@ from src.services.auth import (
     list_users,
     require_admin,
     set_group_permissions,
-    set_permissions,
     set_user_group,
     update_profile,
 )
@@ -100,8 +98,3 @@ def admin_set_group_permissions(group_key: str, payload: GroupPermissionPayload,
 @router.put('/admin/users/{openid}/group')
 def admin_set_user_group(openid: str, payload: UserGroupPayload, _=Depends(require_admin)):
     return {'code': 200, 'success': True, 'data': {'user': set_user_group(openid, payload.groupKey), 'modules': MODULES}}
-
-
-@router.put('/admin/users/{openid}/permissions')
-def admin_set_permissions(openid: str, payload: PermissionPayload, _=Depends(require_admin)):
-    return {'code': 200, 'success': True, 'data': {'user': set_permissions(openid, payload.permissions), 'modules': MODULES}}
