@@ -4,13 +4,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.routes.auth import router as auth_router
 from src.routes.health import router as health_router
+from src.routes.messages import router as messages_router
 from src.routes.tools import router as tools_router
 from src.services.auth import init_db
+from src.services.messages import init_message_db
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
     init_db()
+    init_message_db()
 
     app.add_middleware(
         CORSMiddleware,
@@ -22,6 +25,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router, prefix="/auth", tags=["auth"])
+    app.include_router(messages_router, prefix="/messages", tags=["messages"])
     app.include_router(tools_router, prefix="/tools", tags=["tools"])
     return app
 

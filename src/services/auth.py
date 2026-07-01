@@ -37,6 +37,11 @@ class PermissionPayload(BaseModel):
     permissions: dict[str, bool]
 
 
+class GlobalPermissionPayload(BaseModel):
+    globalFirst: bool
+    permissions: dict[str, bool]
+
+
 class ProfilePayload(BaseModel):
     nickName: str | None = None
     avatarUrl: str | None = None
@@ -68,6 +73,29 @@ def init_db() -> None:
                 PRIMARY KEY(openid, module)
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS global_permission_settings (
+                id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+                global_first BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at BIGINT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS global_module_permissions (
+                module TEXT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL
+            )"""
+        )
+        now = int(time.time())
+        conn.execute(
+            'INSERT INTO global_permission_settings(id, global_first, updated_at) VALUES (TRUE, FALSE, %s) ON CONFLICT(id) DO NOTHING',
+            (now,),
+        )
+        for module in MODULES:
+            conn.execute(
+                'INSERT INTO global_module_permissions(module, enabled) VALUES (%s, %s) ON CONFLICT(module) DO NOTHING',
+                (module, module in DEFAULT_ENABLED_MODULES),
+            )
 
 
 def b64url(data: bytes) -> str:
@@ -126,11 +154,46 @@ def fetch_wechat_openid(code: str) -> str:
     return data['openid']
 
 
-def get_permissions(openid: str) -> dict[str, bool]:
+def get_global_permission_settings() -> dict[str, Any]:
+    with get_conn() as conn:
+        setting = conn.execute('SELECT global_first FROM global_permission_settings WHERE id = TRUE').fetchone()
+        rows = conn.execute('SELECT module, enabled FROM global_module_permissions').fetchall()
+    saved = {row['module']: bool(row['enabled']) for row in rows}
+    return {
+        'globalFirst': bool(setting and setting['global_first']),
+        'permissions': {module: saved.get(module, module in DEFAULT_ENABLED_MODULES) for module in MODULES},
+    }
+
+
+def set_global_permission_settings(global_first: bool, permissions: dict[str, bool]) -> dict[str, Any]:
+    now = int(time.time())
+    with get_conn() as conn:
+        conn.execute(
+            'INSERT INTO global_permission_settings(id, global_first, updated_at) VALUES (TRUE, %s, %s) ON CONFLICT(id) DO UPDATE SET global_first = EXCLUDED.global_first, updated_at = EXCLUDED.updated_at',
+            (global_first, now),
+        )
+        for module, enabled in permissions.items():
+            if module not in MODULES:
+                continue
+            conn.execute(
+                'INSERT INTO global_module_permissions(module, enabled) VALUES (%s, %s) ON CONFLICT(module) DO UPDATE SET enabled = EXCLUDED.enabled',
+                (module, enabled),
+            )
+    return get_global_permission_settings()
+
+
+def get_personal_permissions(openid: str) -> dict[str, bool]:
     with get_conn() as conn:
         rows = conn.execute('SELECT module, enabled FROM module_permissions WHERE openid = %s', (openid,)).fetchall()
     saved = {row['module']: bool(row['enabled']) for row in rows}
     return {module: saved.get(module, module in DEFAULT_ENABLED_MODULES) for module in MODULES}
+
+
+def get_permissions(openid: str) -> dict[str, bool]:
+    global_settings = get_global_permission_settings()
+    if global_settings['globalFirst']:
+        return global_settings['permissions']
+    return get_personal_permissions(openid)
 
 
 def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +203,7 @@ def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
         'avatarUrl': row['avatar_url'],
         'role': row['role'],
         'permissions': get_permissions(row['openid']),
+        'personalPermissions': get_personal_permissions(row['openid']),
     }
 
 
@@ -183,9 +247,17 @@ def update_profile(openid: str, nickname: str = '', avatar_url: str = '') -> dic
         updated = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
     return row_to_user(updated)
 
-def list_users() -> list[dict[str, Any]]:
+def list_users(keyword: str = '') -> list[dict[str, Any]]:
+    keyword = keyword.strip()
     with get_conn() as conn:
-        rows = conn.execute('SELECT * FROM users ORDER BY updated_at DESC').fetchall()
+        if keyword:
+            pattern = f'%{keyword}%'
+            rows = conn.execute(
+                'SELECT * FROM users WHERE nickname ILIKE %s OR openid ILIKE %s ORDER BY updated_at DESC',
+                (pattern, pattern),
+            ).fetchall()
+        else:
+            rows = conn.execute('SELECT * FROM users ORDER BY updated_at DESC').fetchall()
     return [row_to_user(row) for row in rows]
 
 
