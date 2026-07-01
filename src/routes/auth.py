@@ -4,6 +4,7 @@ from src.services.auth import (
     LoginPayload,
     MODULES,
     PermissionPayload,
+    ProfilePayload,
     create_token,
     ensure_user,
     fetch_wechat_openid,
@@ -11,6 +12,7 @@ from src.services.auth import (
     list_users,
     require_admin,
     set_permissions,
+    update_profile,
 )
 
 router = APIRouter()
@@ -34,6 +36,12 @@ def wechat_login(payload: LoginPayload):
 @router.get('/me')
 def me(user=Depends(get_current_user)):
     return {'code': 200, 'success': True, 'data': {'user': user, 'modules': MODULES}}
+
+
+@router.patch('/me/profile')
+def update_me_profile(payload: ProfilePayload, user=Depends(get_current_user)):
+    updated_user = update_profile(user['openid'], payload.nickName or '', payload.avatarUrl or '')
+    return {'code': 200, 'success': True, 'data': {'user': updated_user, 'modules': MODULES}}
 
 
 @router.get('/modules')

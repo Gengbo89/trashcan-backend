@@ -36,6 +36,11 @@ class PermissionPayload(BaseModel):
     permissions: dict[str, bool]
 
 
+class ProfilePayload(BaseModel):
+    nickName: str | None = None
+    avatarUrl: str | None = None
+
+
 @contextmanager
 def get_conn():
     with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
@@ -162,6 +167,20 @@ def ensure_user(openid: str, nickname: str = '', avatar_url: str = '') -> dict[s
         user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
     return row_to_user(user)
 
+
+
+def update_profile(openid: str, nickname: str = '', avatar_url: str = '') -> dict[str, Any]:
+    now = int(time.time())
+    with get_conn() as conn:
+        user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+        conn.execute(
+            "UPDATE users SET nickname = COALESCE(NULLIF(%s, ''), nickname), avatar_url = COALESCE(NULLIF(%s, ''), avatar_url), updated_at = %s WHERE openid = %s",
+            (nickname, avatar_url, now, openid),
+        )
+        updated = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
+    return row_to_user(updated)
 
 def list_users() -> list[dict[str, Any]]:
     with get_conn() as conn:
