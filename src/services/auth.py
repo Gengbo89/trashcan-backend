@@ -17,6 +17,7 @@ from src.config import settings
 
 MODULES = {
     'file_transfer': '文件中转',
+    'image_crop': '图片裁剪',
     'document_convert': '文档转换',
     'qrcode': '二维码工具',
     'text_helper': '文本助手',
