@@ -14,6 +14,7 @@ from fastapi import Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
 from src.config import settings
+from src.services.security import check_text_security
 
 MODULES = {
     'file_transfer': '文件中转',
@@ -25,6 +26,7 @@ MODULES = {
 }
 DEFAULT_ENABLED_MODULES = {'file_transfer'}
 TOKEN_TTL_SECONDS = 30 * 24 * 3600
+PROFILE_UPDATE_INTERVAL_SECONDS = 30 * 24 * 3600
 DEFAULT_PERMISSION_GROUP = 'T2'
 PERMISSION_GROUPS = {
     'T0': {'name': 'T0 全部权限', 'editable': False},
@@ -71,6 +73,7 @@ def init_db() -> None:
             )"""
         )
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_group TEXT DEFAULT 'T2'")
+        conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_updated_at BIGINT NOT NULL DEFAULT 0')
         conn.execute('DROP TABLE IF EXISTS module_permissions')
         conn.execute('DROP TABLE IF EXISTS global_module_permissions')
         conn.execute('DROP TABLE IF EXISTS global_permission_settings')
@@ -225,6 +228,8 @@ def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
         'permissionGroup': row.get('permission_group') or DEFAULT_PERMISSION_GROUP,
         'permissionGroupName': get_permission_group(row.get('permission_group') or DEFAULT_PERMISSION_GROUP)['name'],
         'permissions': get_permissions(row['openid']),
+        'profileUpdatedAt': row.get('profile_updated_at') or 0,
+        'profileEditableAt': (row.get('profile_updated_at') or 0) + PROFILE_UPDATE_INTERVAL_SECONDS if row.get('profile_updated_at') else 0,
     }
 
 
@@ -252,16 +257,29 @@ def ensure_user(openid: str, nickname: str = '', avatar_url: str = '') -> dict[s
 
 def update_profile(openid: str, nickname: str = '', avatar_url: str = '') -> dict[str, Any]:
     now = int(time.time())
+    nickname = nickname.strip()
+    avatar_url = avatar_url.strip()
+    if nickname:
+        if len(nickname) > 30:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='昵称过长')
+        check_text_security(nickname, openid)
     with get_conn() as conn:
         user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+        last_profile_updated_at = int(user.get('profile_updated_at') or 0)
+        if last_profile_updated_at and now - last_profile_updated_at < PROFILE_UPDATE_INTERVAL_SECONDS:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='资料每30天只能修改一次')
         conn.execute(
-            "UPDATE users SET nickname = COALESCE(NULLIF(%s, ''), nickname), avatar_url = COALESCE(NULLIF(%s, ''), avatar_url), updated_at = %s WHERE openid = %s",
-            (nickname, avatar_url, now, openid),
+            "UPDATE users SET nickname = COALESCE(NULLIF(%s, ''), nickname), avatar_url = COALESCE(NULLIF(%s, ''), avatar_url), updated_at = %s, profile_updated_at = %s WHERE openid = %s",
+            (nickname, avatar_url, now, now, openid),
         )
         updated = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
     return row_to_user(updated)
+
+
+def get_default_permissions() -> dict[str, bool]:
+    return get_group_permissions(DEFAULT_PERMISSION_GROUP)
 
 def list_users(keyword: str = '') -> list[dict[str, Any]]:
     keyword = keyword.strip()

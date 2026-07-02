@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from src.services.analytics import record_event
 from src.config import settings
 from src.services.auth import require_module
+from src.services.security import check_image_security, check_text_security, looks_like_image
 from src.services.storage import storage_service
 
 router = APIRouter()
@@ -95,17 +96,6 @@ def filename_from_url(url: str, content_type: str) -> str:
     return f'image.{suffix_map.get(content_type, "bin")}'
 
 
-def looks_like_image(data: bytes) -> bool:
-    return (
-        data.startswith(b'\xff\xd8\xff')
-        or data.startswith(b'\x89PNG\r\n\x1a\n')
-        or data.startswith(b'GIF87a')
-        or data.startswith(b'GIF89a')
-        or data.startswith(b'BM')
-        or (data.startswith(b'RIFF') and len(data) > 12 and data[8:12] == b'WEBP')
-    )
-
-
 def fetch_remote_image(url: str) -> tuple[str, bytes, str]:
     current_url = url
     opener = urllib.request.build_opener(NoRedirectHandler)
@@ -152,7 +142,9 @@ def fetch_remote_image(url: str) -> tuple[str, bytes, str]:
 
 @router.post('/image-proxy')
 def proxy_image(payload: ImageProxyPayload, user=Depends(require_module('image_crop'))):
+    check_text_security(payload.url, user['openid'])
     final_url, data, content_type = fetch_remote_image(payload.url)
+    check_image_security(data, filename_from_url(final_url, content_type), content_type)
     filename = filename_from_url(final_url, content_type)
     result = storage_service.upload_bytes(data, filename, content_type, IMAGE_PROXY_DIR)
     record_event(user['openid'], 'image_crop', 'image_proxy', True, metadata={'size': len(data)})
@@ -169,6 +161,21 @@ def proxy_image(payload: ImageProxyPayload, user=Depends(require_module('image_c
             'objectKey': result['objectKey'],
         },
     }
+
+
+@router.post('/image-sec-check')
+async def image_sec_check(file: UploadFile = File(...), user=Depends(require_module('image_crop'))):
+    content_type = file.content_type or ''
+    if content_type and content_type != 'application/octet-stream' and content_type not in IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
+    data = await file.read(settings.max_upload_size_bytes + 1)
+    if len(data) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Image is too large')
+    if not looks_like_image(data):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
+    check_image_security(data, file.filename or 'image.jpg', content_type)
+    record_event(user['openid'], 'image_crop', 'image_sec_check', True, metadata={'size': len(data)})
+    return {'code': 200, 'success': True, 'data': {'safe': True}}
 
 
 def convert_pdf_to_docx(input_path: Path, output_path: Path) -> None:
@@ -278,6 +285,7 @@ def generate_qrcode(payload: QrCodePayload, user=Depends(require_module('qrcode'
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QR content is required')
     if len(text) > 2048:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='QR content is too long')
+    check_text_security(text, user['openid'])
     try:
         import qrcode
     except ImportError as exc:

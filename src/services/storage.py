@@ -94,6 +94,16 @@ class StorageService:
             'contentType': content_type,
         }
 
+    def presign_object(self, object_key: str) -> str:
+        return self.client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={
+                'Bucket': settings.rustfs_bucket,
+                'Key': object_key,
+            },
+            ExpiresIn=settings.presigned_url_expires_seconds,
+        )
+
     async def read_uploads(self, files: list[UploadFile], max_size: int) -> list[UploadItem]:
         items = []
         total_size = 0

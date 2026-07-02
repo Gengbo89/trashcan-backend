@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, status
+from fastapi.responses import RedirectResponse
 
 from src.services.analytics import record_event
 from src.services.auth import (
@@ -11,6 +12,7 @@ from src.services.auth import (
     ensure_user,
     fetch_wechat_openid,
     get_current_user,
+    get_default_permissions,
     list_permission_groups,
     list_users,
     require_admin,
@@ -18,8 +20,12 @@ from src.services.auth import (
     set_user_group,
     update_profile,
 )
+from src.services.security import check_image_security, looks_like_image
+from src.services.storage import storage_service
 
 router = APIRouter()
+AVATAR_DIR = 'avatars'
+AVATAR_CONTENT_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp', 'application/octet-stream'}
 
 
 @router.post('/wechat-login')
@@ -48,6 +54,20 @@ def me(user=Depends(get_current_user)):
     }
 
 
+@router.get('/public-modules')
+def public_modules():
+    return {
+        'code': 200,
+        'success': True,
+        'data': {
+            'modules': MODULES,
+            'permissions': get_default_permissions(),
+            'permissionGroup': 'T2',
+            'permissionGroupName': 'T2 默认权限',
+        },
+    }
+
+
 @router.patch('/me/profile')
 def update_me_profile(payload: ProfilePayload, user=Depends(get_current_user)):
     updated_user = update_profile(user['openid'], payload.nickName or '', payload.avatarUrl or '')
@@ -56,6 +76,35 @@ def update_me_profile(payload: ProfilePayload, user=Depends(get_current_user)):
         'success': True,
         'data': {'user': updated_user, 'modules': MODULES, 'permissionGroups': list_permission_groups()},
     }
+
+
+@router.post('/me/avatar')
+async def upload_me_avatar(file: UploadFile = File(...), user=Depends(get_current_user)):
+    content_type = file.content_type or 'application/octet-stream'
+    if content_type not in AVATAR_CONTENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
+    data = await file.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='头像不能超过2M')
+    if not looks_like_image(data):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
+    check_image_security(data, file.filename or 'avatar.jpg', content_type)
+    result = storage_service.upload_bytes(data, f'{user["openid"]}-avatar.jpg', content_type, AVATAR_DIR)
+    return {
+        'code': 200,
+        'success': True,
+        'data': {
+            'avatarUrl': result['downloadUrl'],
+            'objectKey': result['objectKey'],
+        },
+    }
+
+
+@router.get('/avatar')
+def avatar(key: str = Query(...)):
+    if not key.startswith(f'{AVATAR_DIR}/') or '..' in key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid avatar key')
+    return RedirectResponse(storage_service.presign_object(key))
 
 
 @router.get('/modules')

@@ -1,6 +1,5 @@
 import json
 import time
-import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -9,6 +8,8 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.services.auth import get_conn
+from src.services.security import check_text_security
+from src.services.wechat import get_wechat_access_token
 
 
 class MessagePayload(BaseModel):
@@ -138,6 +139,7 @@ def create_message(user: dict[str, Any], content: str, target_openid: str | None
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='content required')
     if len(content) > 1000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='content too long')
+    check_text_security(content, user['openid'])
     user_openid = assert_target(user, target_openid)
     now = int(time.time())
     sender_role = 'admin' if user['role'] == 'admin' else 'user'
@@ -171,21 +173,6 @@ def get_subscription(openid: str) -> dict[str, Any]:
         'enabled': bool(row and row['enabled']),
         'templateId': settings.wechat_message_template_id,
     }
-
-
-def get_wechat_access_token() -> str:
-    if not settings.wechat_appid or not settings.wechat_secret:
-        return ''
-    query = urllib.parse.urlencode(
-        {
-            'grant_type': 'client_credential',
-            'appid': settings.wechat_appid,
-            'secret': settings.wechat_secret,
-        }
-    )
-    with urllib.request.urlopen(f'https://api.weixin.qq.com/cgi-bin/token?{query}', timeout=8) as response:
-        data = json.loads(response.read().decode('utf-8'))
-    return data.get('access_token', '')
 
 
 def count_user_unread_messages(openid: str) -> int:
