@@ -69,6 +69,7 @@ def list_conversations(user: dict[str, Any]) -> list[dict[str, Any]]:
                     m.user_openid,
                     u.nickname,
                     u.avatar_url,
+                    u.permission_group,
                     m.content,
                     m.created_at,
                     (
@@ -98,6 +99,7 @@ def list_conversations(user: dict[str, Any]) -> list[dict[str, Any]]:
             'userOpenid': row['user_openid'],
             'name': row['nickname'] or '微信用户',
             'avatarUrl': row['avatar_url'] or '',
+            'permissionGroup': row.get('permission_group') or '',
             'lastContent': row['content'] or '暂无消息',
             'lastTime': row['created_at'],
             'unreadCount': int(row['unread_count'] or 0),
