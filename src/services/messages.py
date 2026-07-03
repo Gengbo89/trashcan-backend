@@ -70,6 +70,8 @@ def list_conversations(user: dict[str, Any]) -> list[dict[str, Any]]:
                     u.nickname,
                     u.avatar_url,
                     u.permission_group,
+                    u.last_ip,
+                    u.last_ip_location,
                     m.content,
                     m.created_at,
                     (
@@ -88,6 +90,9 @@ def list_conversations(user: dict[str, Any]) -> list[dict[str, Any]]:
                     %s AS user_openid,
                     '管理员' AS nickname,
                     '' AS avatar_url,
+                    '' AS permission_group,
+                    '' AS last_ip,
+                    '' AS last_ip_location,
                     COALESCE((SELECT content FROM user_messages WHERE user_openid = %s ORDER BY created_at DESC LIMIT 1), '') AS content,
                     COALESCE((SELECT created_at FROM user_messages WHERE user_openid = %s ORDER BY created_at DESC LIMIT 1), 0) AS created_at,
                     (SELECT COUNT(*) FROM user_messages WHERE user_openid = %s AND sender_role = 'admin' AND read_by_user = FALSE) AS unread_count
@@ -100,6 +105,8 @@ def list_conversations(user: dict[str, Any]) -> list[dict[str, Any]]:
             'name': row['nickname'] or '微信用户',
             'avatarUrl': row['avatar_url'] or '',
             'permissionGroup': row.get('permission_group') or '',
+            'lastIp': row.get('last_ip') or '',
+            'lastIpLocation': row.get('last_ip_location') or '',
             'lastContent': row['content'] or '暂无消息',
             'lastTime': row['created_at'],
             'unreadCount': int(row['unread_count'] or 0),

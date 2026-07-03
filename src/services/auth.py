@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import time
 import urllib.parse
@@ -74,6 +75,9 @@ def init_db() -> None:
         )
         conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_group TEXT DEFAULT 'T2'")
         conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_updated_at BIGINT NOT NULL DEFAULT 0')
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_ip TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_ip_location TEXT DEFAULT ''")
+        conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at BIGINT NOT NULL DEFAULT 0')
         conn.execute('DROP TABLE IF EXISTS module_permissions')
         conn.execute('DROP TABLE IF EXISTS global_module_permissions')
         conn.execute('DROP TABLE IF EXISTS global_permission_settings')
@@ -230,6 +234,9 @@ def row_to_user(row: dict[str, Any]) -> dict[str, Any]:
         'permissions': get_permissions(row['openid']),
         'profileUpdatedAt': row.get('profile_updated_at') or 0,
         'profileEditableAt': (row.get('profile_updated_at') or 0) + PROFILE_UPDATE_INTERVAL_SECONDS if row.get('profile_updated_at') else 0,
+        'lastIp': row.get('last_ip') or '',
+        'lastIpLocation': row.get('last_ip_location') or '',
+        'lastLoginAt': row.get('last_login_at') or 0,
     }
 
 
@@ -252,6 +259,52 @@ def ensure_user(openid: str, nickname: str = '', avatar_url: str = '') -> dict[s
             )
         user = conn.execute('SELECT * FROM users WHERE openid = %s', (openid,)).fetchone()
     return row_to_user(user)
+
+
+def ip_location_label(ip: str) -> str:
+    if not ip:
+        return ''
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return '未知网络'
+    if parsed.is_loopback or parsed.is_private:
+        return ''
+    if not settings.amap_ip_key:
+        return ip
+    query = urllib.parse.urlencode({'key': settings.amap_ip_key, 'ip': ip})
+    try:
+        with urllib.request.urlopen(f'https://restapi.amap.com/v3/ip?{query}', timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+    except Exception:
+        return ip
+    if data.get('status') != '1':
+        return ip
+    province = data.get('province') if isinstance(data.get('province'), str) else ''
+    city = data.get('city') if isinstance(data.get('city'), str) else ''
+    parts = [item for item in (province, city) if item]
+    return ' '.join(parts) or ip
+
+
+def client_ip_from_headers(headers: dict[str, str], client_host: str = '') -> str:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    for key in ('x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'):
+        value = normalized.get(key)
+        if value:
+            return value.split(',')[0].strip()
+    return client_host or ''
+
+
+def update_user_login_ip(openid: str, ip: str) -> None:
+    ip = (ip or '').split(',')[0].strip()
+    if not ip:
+        return
+    now = int(time.time())
+    with get_conn() as conn:
+        conn.execute(
+            'UPDATE users SET last_ip = %s, last_ip_location = %s, last_login_at = %s, updated_at = %s WHERE openid = %s',
+            (ip, ip_location_label(ip), now, now, openid),
+        )
 
 
 
