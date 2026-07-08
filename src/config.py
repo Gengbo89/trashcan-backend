@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="change-me", repr=False)
     admin_openids: str = ""
     database_url: str = "postgresql://trashcan:trashcan@127.0.0.1:5432/trashcan"
-    amap_ip_key: str = Field(default="", repr=False)
 
     rustfs_endpoint_url: str = "https://rustfs.gengbo.top"
     rustfs_access_key: str = Field(default="", repr=False)

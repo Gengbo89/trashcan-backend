@@ -76,12 +76,9 @@ WECHAT_MESSAGE_TEMPLATE_ID=yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus
 JWT_SECRET=use-a-long-random-string
 ADMIN_OPENIDS=openid1,openid2
 DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
-AMAP_IP_KEY=your-amap-web-service-key
 ```
 
 The first logged-in user is also promoted to admin automatically, which is convenient for initial setup. Admins can open the mini program's `我的 -> 权限管理` page to enable or disable modules for each user. The upload APIs require the `file_transfer` module permission.
-
-`AMAP_IP_KEY` is used server-side to convert the user's latest login IP into a province/city label for admin message views.
 
 ## Message Reminders
 

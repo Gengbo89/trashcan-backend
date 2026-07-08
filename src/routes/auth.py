@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, HTTPException, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, status
 from fastapi.responses import RedirectResponse
 
 from src.services.analytics import record_event
@@ -8,7 +8,6 @@ from src.services.auth import (
     MODULES,
     ProfilePayload,
     UserGroupPayload,
-    client_ip_from_headers,
     create_token,
     ensure_user,
     fetch_wechat_openid,
@@ -20,7 +19,6 @@ from src.services.auth import (
     set_group_permissions,
     set_user_group,
     update_profile,
-    update_user_login_ip,
 )
 from src.services.security import check_image_security, looks_like_image
 from src.services.storage import storage_service
@@ -31,11 +29,9 @@ AVATAR_CONTENT_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'i
 
 
 @router.post('/wechat-login')
-def wechat_login(payload: LoginPayload, request: Request):
+def wechat_login(payload: LoginPayload):
     openid = fetch_wechat_openid(payload.code)
     user = ensure_user(openid, payload.nickName or '', payload.avatarUrl or '')
-    update_user_login_ip(openid, client_ip_from_headers(dict(request.headers), request.client.host if request.client else ''))
-    user = ensure_user(openid)
     record_event(user['openid'], 'auth', 'login', True)
     return {
         'code': 200,
@@ -50,9 +46,7 @@ def wechat_login(payload: LoginPayload, request: Request):
 
 
 @router.get('/me')
-def me(request: Request, user=Depends(get_current_user)):
-    update_user_login_ip(user['openid'], client_ip_from_headers(dict(request.headers), request.client.host if request.client else ''))
-    user = ensure_user(user['openid'])
+def me(user=Depends(get_current_user)):
     return {
         'code': 200,
         'success': True,
