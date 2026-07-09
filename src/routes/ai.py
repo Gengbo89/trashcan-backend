@@ -69,12 +69,20 @@ def normalize_chat_history(history: list[dict[str, str]]) -> list[dict[str, str]
     return messages
 
 
+def option_items(models: list[str]) -> list[dict[str, str]]:
+    return [{'key': model, 'name': model, 'quota': ''} for model in models]
+
+
 def model_options(config_value: str) -> list[dict[str, str]]:
-    return [{'key': model, 'name': model, 'quota': ''} for model in settings.model_list(config_value)]
+    return option_items(settings.model_list(config_value))
 
 
 def validate_model(model: str | None, config_value: str) -> str:
     allowed = settings.model_list(config_value)
+    return validate_model_from_list(model, allowed)
+
+
+def validate_model_from_list(model: str | None, allowed: list[str]) -> str:
     selected = (model or (allowed[0] if allowed else '')).strip()
     if not selected:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='AI model is not configured')
@@ -119,12 +127,12 @@ def ai_models(user=Depends(require_module('ai_suite'))):
                     'options': model_options(settings.ai_chat_models),
                 },
                 'textToImage': {
-                    'default': settings.default_model(settings.ai_text_to_image_models),
-                    'options': model_options(settings.ai_text_to_image_models),
+                    'default': settings.default_vision_model('textToImage'),
+                    'options': option_items(settings.vision_model_list('textToImage')),
                 },
                 'imageToImage': {
-                    'default': settings.default_model(settings.ai_image_to_image_models),
-                    'options': model_options(settings.ai_image_to_image_models),
+                    'default': settings.default_vision_model('imageToImage'),
+                    'options': option_items(settings.vision_model_list('imageToImage')),
                 },
                 'transcription': {
                     'default': settings.default_model(settings.ai_transcription_models),
@@ -176,7 +184,7 @@ def text_to_image(payload: TextToImagePayload, user=Depends(require_module('ai_s
     if len(prompt) > 800:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Prompt is too long')
     check_text_security(prompt, user['openid'])
-    model = validate_model(payload.model, settings.ai_text_to_image_models)
+    model = validate_model_from_list(payload.model, settings.vision_model_list('textToImage'))
     try:
         task_id = ai_service.start_image_task(model, {'prompt': prompt}, payload.size or settings.ai_image_size)
         image_url = ai_service.result_image_url(ai_service.poll_task(task_id))
@@ -219,7 +227,7 @@ async def image_to_image(
     if not looks_like_image(data):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
     check_image_security(data, file.filename or 'input.png', content_type)
-    selected_model = validate_model(model, settings.ai_image_to_image_models)
+    selected_model = validate_model_from_list(model, settings.vision_model_list('imageToImage'))
     source = storage_service.upload_bytes(data, safe_filename('ai-source', content_type), content_type, AI_IMAGE_DIR)
     try:
         task_id = ai_service.start_image_task(
