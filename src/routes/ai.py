@@ -22,10 +22,13 @@ AUDIO_CONTENT_TYPES = {
     'audio/x-wav',
     'audio/mp4',
     'audio/m4a',
+    'audio/x-m4a',
     'audio/aac',
     'audio/ogg',
+    'video/mp4',
     'application/octet-stream',
 }
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.mp4'}
 
 
 class ChatPayload(BaseModel):
@@ -99,6 +102,35 @@ def upload_generated_image(image_url: str, openid: str) -> dict:
     result = storage_service.upload_bytes(data, safe_filename('ai-image', content_type), content_type, AI_IMAGE_DIR)
     record_event(openid, 'ai_suite', 'image_store', True, metadata={'size': len(data)})
     return result
+
+
+def looks_like_audio(data: bytes) -> bool:
+    head = data[:32]
+    return (
+        head.startswith(b'ID3')
+        or head.startswith(b'RIFF') and head[8:12] == b'WAVE'
+        or head.startswith(b'OggS')
+        or b'ftyp' in head[:16]
+        or len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0
+        or head.startswith(b'ADIF')
+    )
+
+
+def is_audio_upload(filename: str, content_type: str, data: bytes) -> bool:
+    suffix = Path(filename or '').suffix.lower()
+    return content_type in AUDIO_CONTENT_TYPES or suffix in AUDIO_EXTENSIONS or looks_like_audio(data)
+
+
+def create_image(model: str, input_payload: dict, size: str, openid: str) -> dict:
+    try:
+        task_id = ai_service.start_image_task(model, input_payload, size)
+        task_result = ai_service.poll_task(task_id)
+    except ai_service.DashScopeError as exc:
+        if not ai_service.is_async_unsupported(exc):
+            raise
+        task_result = ai_service.generate_image_sync(model, input_payload, size)
+    image_url = ai_service.result_image_url(task_result)
+    return upload_generated_image(image_url, openid)
 
 
 def raise_ai_error(exc: ai_service.DashScopeError):
@@ -186,9 +218,7 @@ def text_to_image(payload: TextToImagePayload, user=Depends(require_module('ai_s
     check_text_security(prompt, user['openid'])
     model = validate_model_from_list(payload.model, settings.vision_model_list('textToImage'))
     try:
-        task_id = ai_service.start_image_task(model, {'prompt': prompt}, payload.size or settings.ai_image_size)
-        image_url = ai_service.result_image_url(ai_service.poll_task(task_id))
-        result = upload_generated_image(image_url, user['openid'])
+        result = create_image(model, {'prompt': prompt}, payload.size or settings.ai_image_size, user['openid'])
     except ai_service.DashScopeError as exc:
         record_event(user['openid'], 'ai_suite', 'text_to_image', False, str(exc))
         raise_ai_error(exc)
@@ -230,13 +260,12 @@ async def image_to_image(
     selected_model = validate_model_from_list(model, settings.vision_model_list('imageToImage'))
     source = storage_service.upload_bytes(data, safe_filename('ai-source', content_type), content_type, AI_IMAGE_DIR)
     try:
-        task_id = ai_service.start_image_task(
+        result = create_image(
             selected_model,
             {'prompt': prompt, 'base_image_url': source['downloadUrl']},
             size or settings.ai_image_size,
+            user['openid'],
         )
-        image_url = ai_service.result_image_url(ai_service.poll_task(task_id))
-        result = upload_generated_image(image_url, user['openid'])
     except ai_service.DashScopeError as exc:
         record_event(user['openid'], 'ai_suite', 'image_to_image', False, str(exc))
         raise_ai_error(exc)
@@ -261,12 +290,12 @@ async def transcribe_audio(
     user=Depends(require_module('ai_suite')),
 ):
     content_type = file.content_type or 'application/octet-stream'
-    if content_type not in AUDIO_CONTENT_TYPES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only audio files are supported')
     data = await file.read(settings.max_upload_size_bytes + 1)
     if len(data) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Audio is too large')
     source_name = Path(file.filename or '').name or safe_filename('audio', content_type)
+    if not is_audio_upload(source_name, content_type, data):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only audio files are supported')
     selected_model = validate_model(model, settings.ai_transcription_models)
     source = storage_service.upload_bytes(data, source_name, content_type, AI_AUDIO_DIR)
     try:

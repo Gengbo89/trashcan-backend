@@ -21,6 +21,10 @@ class DashScopeFreeQuotaExhausted(DashScopeError):
     pass
 
 
+def is_async_unsupported(exc: DashScopeError) -> bool:
+    return 'does not support asynchronous calls' in exc.message.lower()
+
+
 def raise_dashscope_error(detail: Any, fallback_message: str = 'DashScope request failed'):
     if not isinstance(detail, dict):
         raise DashScopeError(str(detail or fallback_message))
@@ -108,6 +112,18 @@ def start_image_task(model: str, input_payload: dict[str, Any], size: str) -> st
     if not task_id:
         raise_dashscope_error(data, 'Image task was not created')
     return task_id
+
+
+def generate_image_sync(model: str, input_payload: dict[str, Any], size: str) -> dict[str, Any]:
+    payload = {
+        'model': model,
+        'input': input_payload,
+        'parameters': {
+            'size': size or settings.ai_image_size,
+            'n': 1,
+        },
+    }
+    return ensure_success(dashscope_request('/api/v1/services/aigc/text2image/image-synthesis', payload))
 
 
 def start_transcription_task(file_url: str, model: str) -> str:
