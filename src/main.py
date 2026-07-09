@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
+from src.routes.ai import router as ai_router
 from src.routes.analytics import router as analytics_router
 from src.routes.auth import router as auth_router
 from src.routes.health import router as health_router
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     app.include_router(messages_router, prefix="/messages", tags=["messages"])
     app.include_router(tools_router, prefix="/tools", tags=["tools"])
     app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
+    app.include_router(ai_router, prefix="/ai", tags=["ai"])
     return app
 
 

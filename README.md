@@ -76,9 +76,22 @@ WECHAT_MESSAGE_TEMPLATE_ID=yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus
 JWT_SECRET=use-a-long-random-string
 ADMIN_OPENIDS=openid1,openid2
 DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
+DASHSCOPE_API_KEY=your-bailian-api-key
+AI_CHAT_MODELS=qwen-turbo,qwen-plus,qwen-long
+AI_TEXT_TO_IMAGE_MODELS=wanx2.1-t2i-turbo
+AI_IMAGE_TO_IMAGE_MODELS=wanx2.1-imageedit
+AI_TRANSCRIPTION_MODELS=paraformer-v2
 ```
 
 The first logged-in user is also promoted to admin automatically, which is convenient for initial setup. Admins can open the mini program's `我的 -> 权限管理` page to enable or disable modules for each user. The upload APIs require the `file_transfer` module permission.
+
+## AI Tools
+
+AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. The model list is configured with comma-separated `AI_*_MODELS` values. The first model in each list is used as the default model shown in the mini program.
+
+Generated images are downloaded by the backend, checked by the existing image safety flow, uploaded to RustFS, and returned as 1-hour presigned links.
+
+When Alibaba Cloud Model Studio returns `AllocationQuota.FreeTierOnly`, the backend responds with HTTP 403 and `AI_FREE_QUOTA_EXHAUSTED`. The mini program shows this as free quota exhausted instead of a generic AI failure.
 
 ## Message Reminders
 

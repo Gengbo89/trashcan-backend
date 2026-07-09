@@ -23,6 +23,7 @@ MODULES = {
     'qrcode': '二维码工具',
     'text_helper': '文本助手',
     'data_dashboard': '数据看板',
+    'ai_suite': 'AI 工具',
 }
 DEFAULT_ENABLED_MODULES = {'file_transfer'}
 TOKEN_TTL_SECONDS = 30 * 24 * 3600

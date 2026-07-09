@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     admin_openids: str = ""
     database_url: str = "postgresql://trashcan:trashcan@127.0.0.1:5432/trashcan"
 
+    dashscope_api_key: str = Field(default="", repr=False)
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com"
+    dashscope_compatible_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ai_chat_models: str = "qwen-turbo,qwen-plus,qwen-long"
+    ai_text_to_image_models: str = "wanx2.1-t2i-turbo"
+    ai_image_to_image_models: str = "wanx2.1-imageedit"
+    ai_transcription_models: str = "paraformer-v2"
+    ai_image_size: str = "1024*1024"
+
     rustfs_endpoint_url: str = "https://rustfs.gengbo.top"
     rustfs_access_key: str = Field(default="", repr=False)
     rustfs_secret_key: str = Field(default="", repr=False)
@@ -39,6 +48,14 @@ class Settings(BaseSettings):
     @cached_property
     def admin_openid_set(self) -> set[str]:
         return {item.strip() for item in self.admin_openids.split(",") if item.strip()}
+
+    def model_list(self, value: str) -> list[str]:
+        models = [item.strip() for item in value.split(",") if item.strip()]
+        return models
+
+    def default_model(self, value: str) -> str:
+        models = self.model_list(value)
+        return models[0] if models else ""
 
 
 settings = Settings()
