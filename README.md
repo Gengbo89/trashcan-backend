@@ -76,8 +76,10 @@ WECHAT_MESSAGE_TEMPLATE_ID=yrnDr2o4chCcJTxEcZm59BThRMrZ3rkt4oXZlHzakus
 JWT_SECRET=use-a-long-random-string
 ADMIN_OPENIDS=openid1,openid2
 DATABASE_URL=postgresql://trashcan:trashcan@postgres:5432/trashcan
+LOG_LEVEL=INFO
 DASHSCOPE_API_KEY=your-bailian-api-key
-DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v1
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
+DASHSCOPE_SERVICE_URL=https://dashscope.aliyuncs.com/api/v1
 DASHSCOPE_COMPATIBLE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 AI_CHAT_MODELS=qwen-turbo,qwen-plus,qwen-long
 AI_VISION_MODELS=wanx2.1-t2i-turbo:textToImage,wanx2.1-imageedit:imageToImage
@@ -88,7 +90,7 @@ The first logged-in user is also promoted to admin automatically, which is conve
 
 ## AI Tools
 
-AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. The model list is configured with comma-separated `AI_*_MODELS` values. The first model in each list is used as the default model shown in the mini program. Visual models share `AI_VISION_MODELS`; add a capability suffix such as `:textToImage`, `:imageToImage`, or `:textToImage|imageToImage` to control which mini program entry can select the model.
+AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. Chat uses `DASHSCOPE_COMPATIBLE_URL`; image generation and speech transcription use `DASHSCOPE_SERVICE_URL`. Keep `DASHSCOPE_SERVICE_URL` on the standard DashScope service endpoint unless your custom Model Studio host explicitly supports `/services/...` APIs. The model list is configured with comma-separated `AI_*_MODELS` values. The first model in each list is used as the default model shown in the mini program. Visual models share `AI_VISION_MODELS`; add a capability suffix such as `:textToImage`, `:imageToImage`, or `:textToImage|imageToImage` to control which mini program entry can select the model.
 
 Generated images are downloaded by the backend, checked by the existing image safety flow, uploaded to RustFS, and returned as 1-hour presigned links.
 

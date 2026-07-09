@@ -1,4 +1,6 @@
+import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -10,6 +12,8 @@ from src.services.analytics import record_event
 from src.services.auth import require_module
 from src.services.security import check_image_security, check_text_security, looks_like_image
 from src.services.storage import storage_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 AI_IMAGE_DIR = 'ai-images'
@@ -95,11 +99,20 @@ def validate_model_from_list(model: str | None, allowed: list[str]) -> str:
 
 
 def upload_generated_image(image_url: str, openid: str) -> dict:
+    logger.info('ai_upload_generated_image_start openid=%s source_host=%s', openid, urlparse(image_url).netloc)
     data, content_type = ai_service.download_binary(image_url, settings.max_upload_size_bytes)
     if not looks_like_image(data):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Generated file is not a valid image')
     check_image_security(data, 'ai-generated.png', content_type)
     result = storage_service.upload_bytes(data, safe_filename('ai-image', content_type), content_type, AI_IMAGE_DIR)
+    logger.info(
+        'ai_upload_generated_image_success openid=%s content_type=%s bytes=%s object_key=%s download_host=%s',
+        openid,
+        content_type,
+        len(data),
+        result.get('objectKey'),
+        urlparse(result.get('downloadUrl', '')).netloc,
+    )
     record_event(openid, 'ai_suite', 'image_store', True, metadata={'size': len(data)})
     return result
 
@@ -122,18 +135,24 @@ def is_audio_upload(filename: str, content_type: str, data: bytes) -> bool:
 
 
 def create_image(model: str, input_payload: dict, size: str, openid: str) -> dict:
+    logger.info('ai_create_image_start openid=%s model=%s size=%s input_keys=%s', openid, model, size, ','.join(input_payload.keys()))
     try:
         task_id = ai_service.start_image_task(model, input_payload, size)
         task_result = ai_service.poll_task(task_id)
     except ai_service.DashScopeError as exc:
         if not ai_service.is_async_unsupported(exc):
+            logger.warning('ai_create_image_async_failed openid=%s model=%s code=%s message=%s', openid, model, exc.code, exc.message)
             raise
+        logger.info('ai_create_image_fallback_sync openid=%s model=%s reason=%s', openid, model, exc.message)
         task_result = ai_service.generate_image_sync(model, input_payload, size)
     image_url = ai_service.result_image_url(task_result)
-    return upload_generated_image(image_url, openid)
+    result = upload_generated_image(image_url, openid)
+    logger.info('ai_create_image_success openid=%s model=%s object_key=%s', openid, model, result.get('objectKey'))
+    return result
 
 
 def raise_ai_error(exc: ai_service.DashScopeError):
+    logger.warning('ai_provider_error code=%s message=%s', exc.code, exc.message)
     if isinstance(exc, ai_service.DashScopeFreeQuotaExhausted):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -143,7 +162,14 @@ def raise_ai_error(exc: ai_service.DashScopeError):
                 'message': exc.message,
             },
         ) from exc
-    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail={
+            'code': 'AI_PROVIDER_ERROR',
+            'providerCode': exc.code,
+            'message': str(exc),
+        },
+    ) from exc
 
 
 @router.get('/models')
@@ -222,6 +248,7 @@ def text_to_image(payload: TextToImagePayload, user=Depends(require_module('ai_s
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Prompt is too long')
     check_text_security(prompt, user['openid'])
     model = validate_model_from_list(payload.model, settings.vision_model_list('textToImage'))
+    logger.info('ai_text_to_image_request openid=%s model=%s prompt_len=%s size=%s', user['openid'], model, len(prompt), payload.size or settings.ai_image_size)
     try:
         result = create_image(model, {'prompt': prompt}, payload.size or settings.ai_image_size, user['openid'])
     except ai_service.DashScopeError as exc:
@@ -254,6 +281,7 @@ async def image_to_image(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Prompt is required')
     check_text_security(prompt, user['openid'])
     content_type = file.content_type or 'application/octet-stream'
+    logger.info('ai_image_to_image_upload_start openid=%s filename=%s content_type=%s model=%s prompt_len=%s', user['openid'], file.filename, content_type, model, len(prompt))
     if content_type not in IMAGE_CONTENT_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
     data = await file.read(settings.max_upload_size_bytes + 1)
@@ -264,10 +292,24 @@ async def image_to_image(
     check_image_security(data, file.filename or 'input.png', content_type)
     selected_model = validate_model_from_list(model, settings.vision_model_list('imageToImage'))
     source = storage_service.upload_bytes(data, safe_filename('ai-source', content_type), content_type, AI_IMAGE_DIR)
+    logger.info(
+        'ai_image_to_image_source_uploaded openid=%s model=%s content_type=%s bytes=%s object_key=%s download_host=%s',
+        user['openid'],
+        selected_model,
+        content_type,
+        len(data),
+        source.get('objectKey'),
+        urlparse(source.get('downloadUrl', '')).netloc,
+    )
+    image_input = {
+        'prompt': prompt,
+        'image_url': source['downloadUrl'],
+        'base_image_url': source['downloadUrl'],
+    }
     try:
         result = create_image(
             selected_model,
-            {'prompt': prompt, 'base_image_url': source['downloadUrl']},
+            image_input,
             size or settings.ai_image_size,
             user['openid'],
         )
@@ -295,6 +337,7 @@ async def transcribe_audio(
     user=Depends(require_module('ai_suite')),
 ):
     content_type = file.content_type or 'application/octet-stream'
+    logger.info('ai_transcribe_upload_start openid=%s filename=%s content_type=%s model=%s', user['openid'], file.filename, content_type, model)
     data = await file.read(settings.max_upload_size_bytes + 1)
     if len(data) > settings.max_upload_size_bytes:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='Audio is too large')
@@ -303,6 +346,15 @@ async def transcribe_audio(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only audio files are supported')
     selected_model = validate_model(model, settings.ai_transcription_models)
     source = storage_service.upload_bytes(data, source_name, content_type, AI_AUDIO_DIR)
+    logger.info(
+        'ai_transcribe_source_uploaded openid=%s model=%s content_type=%s bytes=%s object_key=%s download_host=%s',
+        user['openid'],
+        selected_model,
+        content_type,
+        len(data),
+        source.get('objectKey'),
+        urlparse(source.get('downloadUrl', '')).netloc,
+    )
     try:
         task_id = ai_service.start_transcription_task(source['downloadUrl'], selected_model)
         text = ai_service.transcription_text(ai_service.poll_task(task_id, timeout_seconds=180))

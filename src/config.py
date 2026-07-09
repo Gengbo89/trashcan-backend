@@ -1,4 +1,5 @@
 from functools import cached_property
+import logging
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +10,7 @@ class Settings(BaseSettings):
 
     app_name: str = "trashcan-backend"
     app_env: str = "development"
+    log_level: str = "INFO"
     cors_origins: str = "*"
 
     wechat_appid: str = ""
@@ -20,6 +22,7 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str = Field(default="", repr=False)
     dashscope_base_url: str = "https://dashscope.aliyuncs.com"
+    dashscope_service_url: str = "https://dashscope.aliyuncs.com/api/v1"
     dashscope_compatible_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     ai_chat_models: str = "qwen-turbo,qwen-plus,qwen-long"
     ai_vision_models: str = "wanx2.1-t2i-turbo:textToImage,wanx2.1-imageedit:imageToImage"
@@ -72,6 +75,10 @@ class Settings(BaseSettings):
     def default_vision_model(self, capability: str) -> str:
         models = self.vision_model_list(capability)
         return models[0] if models else ""
+
+    @property
+    def logging_level(self) -> int:
+        return getattr(logging, self.log_level.upper(), logging.INFO)
 
 
 settings = Settings()
