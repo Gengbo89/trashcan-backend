@@ -49,8 +49,18 @@ def dashscope_json_headers() -> dict[str, str]:
     }
 
 
+def dashscope_url(path_or_url: str) -> str:
+    if path_or_url.startswith('http'):
+        return path_or_url
+    base = settings.dashscope_base_url.rstrip('/')
+    path = path_or_url if path_or_url.startswith('/') else f'/{path_or_url}'
+    if base.endswith('/api/v1') and path.startswith('/api/v1/'):
+        path = path[len('/api/v1'):]
+    return f'{base}{path}'
+
+
 def dashscope_request(path_or_url: str, payload: dict[str, Any] | None = None, method: str = 'POST', extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
-    url = path_or_url if path_or_url.startswith('http') else f'{settings.dashscope_base_url.rstrip("/")}{path_or_url}'
+    url = dashscope_url(path_or_url)
     headers = dashscope_json_headers()
     if extra_headers:
         headers.update(extra_headers)

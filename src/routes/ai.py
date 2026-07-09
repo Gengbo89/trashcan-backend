@@ -194,7 +194,12 @@ def ai_chat(payload: ChatPayload, user=Depends(require_module('ai_suite'))):
     messages = [
         {
             'role': 'system',
-            'content': '你是1号垃圾桶小程序里的AI工具助手，回答要简洁、准确、可操作。',
+            'content': (
+                '你是一个个人工具集小程序中的通用AI助手。'
+                '“1号垃圾桶”只是产品名称，不代表垃圾分类、垃圾回收或环保查询服务。'
+                '除非用户明确询问相关主题，否则不要主动联想到垃圾分类。'
+                '回答要简洁、准确、可操作。'
+            ),
         },
         *normalize_chat_history(payload.history),
         {'role': 'user', 'content': message},
