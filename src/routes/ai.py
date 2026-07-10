@@ -34,7 +34,8 @@ AUDIO_CONTENT_TYPES = {
 }
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.mp4'}
 AUTO_MODEL_KEY = '__auto__'
-_IMAGE_MODEL_CACHE: dict[str, str] = {}
+_MODEL_CACHE: dict[str, str] = {}
+_EXHAUSTED_MODELS: dict[str, set[str]] = {}
 
 
 class ChatPayload(BaseModel):
@@ -114,17 +115,27 @@ def validate_model_from_list(model: str | None, allowed: list[str]) -> str:
     return selected
 
 
-def ordered_candidates(capability: str, requested_model: str | None) -> list[str]:
-    allowed = vision_models(capability)
+def mark_model_exhausted(capability: str, model: str):
+    _EXHAUSTED_MODELS.setdefault(capability, set()).add(model)
+    if _MODEL_CACHE.get(capability) == model:
+        _MODEL_CACHE.pop(capability, None)
+    logger.warning('ai_model_exhausted capability=%s model=%s', capability, model)
+
+
+def ordered_candidates(capability: str, requested_model: str | None, allowed: list[str]) -> list[str]:
+    exhausted = _EXHAUSTED_MODELS.get(capability, set())
     requested = (requested_model or '').strip()
     if requested and requested != AUTO_MODEL_KEY:
-        return [validate_model_from_list(requested, allowed)]
-    cached = _IMAGE_MODEL_CACHE.get(capability)
+        selected = validate_model_from_list(requested, allowed)
+        return [] if selected in exhausted else [selected]
+    cached = _MODEL_CACHE.get(capability)
     candidates = []
-    if cached in allowed:
+    if cached in allowed and cached not in exhausted:
         candidates.append(cached)
-    candidates.extend(model for model in allowed if model not in candidates)
+    candidates.extend(model for model in allowed if model not in candidates and model not in exhausted)
     if not candidates:
+        if allowed and exhausted.issuperset(allowed):
+            raise ai_service.DashScopeFreeQuotaExhausted('阿里百炼免费额度已用尽，平台已自动停止服务。', 'AllocationQuota.FreeTierOnly')
         validate_model_from_list('', allowed)
     return candidates
 
@@ -183,7 +194,7 @@ def create_image(model: str, input_payload: dict, size: str, openid: str) -> dic
 
 
 def create_image_auto(capability: str, requested_model: str | None, input_payload: dict, size: str, openid: str) -> tuple[dict, str]:
-    candidates = ordered_candidates(capability, requested_model)
+    candidates = ordered_candidates(capability, requested_model, vision_models(capability))
     last_error: ai_service.DashScopeError | None = None
     logger.info(
         'ai_create_image_auto_start openid=%s capability=%s requested=%s candidates=%s',
@@ -195,11 +206,12 @@ def create_image_auto(capability: str, requested_model: str | None, input_payloa
     for candidate in candidates:
         try:
             result = create_image(candidate, input_payload, size, openid)
-            _IMAGE_MODEL_CACHE[capability] = candidate
+            _MODEL_CACHE[capability] = candidate
             logger.info('ai_create_image_auto_success openid=%s capability=%s model=%s', openid, capability, candidate)
             return result, candidate
         except ai_service.DashScopeFreeQuotaExhausted as exc:
             last_error = exc
+            mark_model_exhausted(capability, candidate)
             logger.warning('ai_create_image_auto_quota_exhausted openid=%s capability=%s model=%s', openid, capability, candidate)
         except ai_service.DashScopeError as exc:
             last_error = exc
@@ -214,6 +226,53 @@ def create_image_auto(capability: str, requested_model: str | None, input_payloa
     if last_error:
         raise last_error
     raise ai_service.DashScopeError('No available image model')
+
+
+def chat_completion_auto(requested_model: str | None, messages: list[dict[str, str]]) -> dict:
+    capability = 'chat'
+    candidates = ordered_candidates(capability, requested_model, settings.llm_model_list())
+    last_error: ai_service.DashScopeError | None = None
+    logger.info('ai_chat_auto_start requested=%s candidates=%s', requested_model or AUTO_MODEL_KEY, candidates)
+    for candidate in candidates:
+        try:
+            data = ai_service.chat_completion(messages, candidate)
+            _MODEL_CACHE[capability] = candidate
+            logger.info('ai_chat_auto_success model=%s', candidate)
+            return data
+        except ai_service.DashScopeFreeQuotaExhausted as exc:
+            last_error = exc
+            mark_model_exhausted(capability, candidate)
+            logger.warning('ai_chat_auto_quota_exhausted model=%s', candidate)
+        except ai_service.DashScopeError as exc:
+            last_error = exc
+            logger.warning('ai_chat_auto_candidate_failed model=%s code=%s message=%s', candidate, exc.code, exc.message)
+    if last_error:
+        raise last_error
+    raise ai_service.DashScopeError('No available chat model')
+
+
+def transcribe_audio_auto(requested_model: str | None, file_url: str) -> tuple[str, str]:
+    capability = 'transcription'
+    candidates = ordered_candidates(capability, requested_model, settings.audio_model_list())
+    last_error: ai_service.DashScopeError | None = None
+    logger.info('ai_transcribe_auto_start requested=%s candidates=%s file_host=%s', requested_model or AUTO_MODEL_KEY, candidates, urlparse(file_url).netloc)
+    for candidate in candidates:
+        try:
+            task_id = ai_service.start_transcription_task(file_url, candidate)
+            text = ai_service.transcription_text(ai_service.poll_task(task_id, timeout_seconds=180))
+            _MODEL_CACHE[capability] = candidate
+            logger.info('ai_transcribe_auto_success model=%s chars=%s', candidate, len(text))
+            return text, candidate
+        except ai_service.DashScopeFreeQuotaExhausted as exc:
+            last_error = exc
+            mark_model_exhausted(capability, candidate)
+            logger.warning('ai_transcribe_auto_quota_exhausted model=%s', candidate)
+        except ai_service.DashScopeError as exc:
+            last_error = exc
+            logger.warning('ai_transcribe_auto_candidate_failed model=%s code=%s message=%s', candidate, exc.code, exc.message)
+    if last_error:
+        raise last_error
+    raise ai_service.DashScopeError('No available transcription model')
 
 
 def raise_ai_error(exc: ai_service.DashScopeError):
@@ -255,8 +314,8 @@ def ai_models(user=Depends(require_module('ai_suite'))):
             'freeQuotaNote': '仅接入阿里百炼免费额度模型，免费额度用完即止。',
             'models': {
                 'chat': {
-                    'default': settings.default_model(','.join(settings.llm_model_list())),
-                    'options': option_items(settings.llm_model_list()),
+                    'default': AUTO_MODEL_KEY if settings.llm_model_list() else '',
+                    'options': auto_option_items(settings.llm_model_list()) if settings.llm_model_list() else [],
                 },
                 'textToImage': {
                     'default': AUTO_MODEL_KEY if text_to_image_models else '',
@@ -267,8 +326,8 @@ def ai_models(user=Depends(require_module('ai_suite'))):
                     'options': auto_option_items(image_to_image_models) if image_to_image_models else [],
                 },
                 'transcription': {
-                    'default': settings.default_model(','.join(settings.audio_model_list())),
-                    'options': option_items(settings.audio_model_list()),
+                    'default': AUTO_MODEL_KEY if settings.audio_model_list() else '',
+                    'options': auto_option_items(settings.audio_model_list()) if settings.audio_model_list() else [],
                 },
             },
             'capabilities': [
@@ -290,7 +349,7 @@ def ai_chat(payload: ChatPayload, user=Depends(require_module('ai_suite'))):
     if len(message) > 4000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Message is too long')
     check_text_security(message, user['openid'])
-    model = validate_model_from_list(payload.model, settings.llm_model_list())
+    requested_model = payload.model or AUTO_MODEL_KEY
     messages = [
         {
             'role': 'system',
@@ -305,7 +364,7 @@ def ai_chat(payload: ChatPayload, user=Depends(require_module('ai_suite'))):
         {'role': 'user', 'content': message},
     ]
     try:
-        data = ai_service.chat_completion(messages, model)
+        data = chat_completion_auto(requested_model, messages)
     except ai_service.DashScopeError as exc:
         record_event(user['openid'], 'ai_suite', 'chat', False, str(exc))
         raise_ai_error(exc)
@@ -418,20 +477,18 @@ async def transcribe_audio(
     source_name = Path(file.filename or '').name or safe_filename('audio', content_type)
     if not is_audio_upload(source_name, content_type, data):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only audio files are supported')
-    selected_model = validate_model_from_list(model, settings.audio_model_list())
     source = storage_service.upload_bytes(data, source_name, content_type, AI_AUDIO_DIR)
     logger.info(
         'ai_transcribe_source_uploaded openid=%s model=%s content_type=%s bytes=%s object_key=%s download_host=%s',
         user['openid'],
-        selected_model,
+        model or AUTO_MODEL_KEY,
         content_type,
         len(data),
         source.get('objectKey'),
         urlparse(source.get('downloadUrl', '')).netloc,
     )
     try:
-        task_id = ai_service.start_transcription_task(source['downloadUrl'], selected_model)
-        text = ai_service.transcription_text(ai_service.poll_task(task_id, timeout_seconds=180))
+        text, used_model = transcribe_audio_auto(model or AUTO_MODEL_KEY, source['downloadUrl'])
     except ai_service.DashScopeError as exc:
         record_event(user['openid'], 'ai_suite', 'transcribe', False, str(exc))
         raise_ai_error(exc)
@@ -441,6 +498,6 @@ async def transcribe_audio(
         'success': True,
         'data': {
             'text': text,
-            'model': selected_model,
+            'model': used_model,
         },
     }

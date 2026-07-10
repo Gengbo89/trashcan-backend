@@ -92,7 +92,7 @@ The first logged-in user is also promoted to admin automatically, which is conve
 
 AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. Chat uses `DASHSCOPE_COMPATIBLE_URL`; image generation and speech transcription use `DASHSCOPE_SERVICE_URL`. Keep `DASHSCOPE_SERVICE_URL` on the standard DashScope service endpoint unless your custom Model Studio host explicitly supports `/services/...` APIs.
 
-Models are configured only by broad category: `AI_LLM_MODELS`, `AI_VISION_MODELS`, and `AI_AUDIO_MODELS`. The backend handles capability probing inside a category. For visual generation, both text-to-image and image-to-image use `AI_VISION_MODELS`; the backend tries candidates in order, skips failed candidates, and caches the first successful model per capability.
+Models are configured only by broad category: `AI_LLM_MODELS`, `AI_VISION_MODELS`, and `AI_AUDIO_MODELS`. The backend handles capability probing inside a category. The mini program does not expose model switching; it always asks the backend to auto-select. The backend tries candidates in order, skips failed candidates, caches the first successful model per capability, and marks models that return `AllocationQuota.FreeTierOnly` as exhausted so they are not retried during the current backend process lifetime.
 
 Generated images are downloaded by the backend, checked by the existing image safety flow, uploaded to RustFS, and returned as 1-hour presigned links.
 
