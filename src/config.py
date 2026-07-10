@@ -24,8 +24,10 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com"
     dashscope_service_url: str = "https://dashscope.aliyuncs.com/api/v1"
     dashscope_compatible_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ai_llm_models: str = ""
     ai_chat_models: str = "qwen-turbo,qwen-plus,qwen-long"
-    ai_vision_models: str = "wanx2.1-t2i-turbo:textToImage,wanx2.1-imageedit:imageToImage"
+    ai_vision_models: str = ""
+    ai_audio_models: str = ""
     ai_transcription_models: str = "paraformer-v2"
     ai_image_size: str = "1024*1024"
 
@@ -59,22 +61,23 @@ class Settings(BaseSettings):
         models = self.model_list(value)
         return models[0] if models else ""
 
-    def vision_model_list(self, capability: str) -> list[str]:
+    def llm_model_list(self) -> list[str]:
+        return self.model_list(self.ai_llm_models or self.ai_chat_models)
+
+    def vision_model_list(self) -> list[str]:
         models = []
         for item in self.ai_vision_models.split(","):
             entry = item.strip()
             if not entry:
                 continue
-            model, _, capability_text = entry.partition(":")
+            model, _, _capability_text = entry.partition(":")
             model = model.strip()
-            capabilities = {part.strip() for part in capability_text.split("|") if part.strip()}
-            if model and (not capabilities or "*" in capabilities or capability in capabilities):
+            if model and model not in models:
                 models.append(model)
         return models
 
-    def default_vision_model(self, capability: str) -> str:
-        models = self.vision_model_list(capability)
-        return models[0] if models else ""
+    def audio_model_list(self) -> list[str]:
+        return self.model_list(self.ai_audio_models or self.ai_transcription_models)
 
     @property
     def logging_level(self) -> int:

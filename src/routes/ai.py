@@ -33,6 +33,8 @@ AUDIO_CONTENT_TYPES = {
     'application/octet-stream',
 }
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.ogg', '.mp4'}
+AUTO_MODEL_KEY = '__auto__'
+_IMAGE_MODEL_CACHE: dict[str, str] = {}
 
 
 class ChatPayload(BaseModel):
@@ -80,8 +82,16 @@ def option_items(models: list[str]) -> list[dict[str, str]]:
     return [{'key': model, 'name': model, 'quota': ''} for model in models]
 
 
+def auto_option_items(models: list[str]) -> list[dict[str, str]]:
+    return [{'key': AUTO_MODEL_KEY, 'name': '自动选择', 'quota': '后端按可用模型自动尝试'}, *option_items(models)]
+
+
 def model_options(config_value: str) -> list[dict[str, str]]:
     return option_items(settings.model_list(config_value))
+
+
+def vision_models(capability: str) -> list[str]:
+    return settings.vision_model_list()
 
 
 def validate_model(model: str | None, config_value: str) -> str:
@@ -92,10 +102,31 @@ def validate_model(model: str | None, config_value: str) -> str:
 def validate_model_from_list(model: str | None, allowed: list[str]) -> str:
     selected = (model or (allowed[0] if allowed else '')).strip()
     if not selected:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='AI model is not configured')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                'code': 'AI_MODEL_NOT_CONFIGURED',
+                'message': '未配置可用模型，请按大类配置 AI_LLM_MODELS、AI_VISION_MODELS 或 AI_AUDIO_MODELS。',
+            },
+        )
     if selected not in allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported model')
     return selected
+
+
+def ordered_candidates(capability: str, requested_model: str | None) -> list[str]:
+    allowed = vision_models(capability)
+    requested = (requested_model or '').strip()
+    if requested and requested != AUTO_MODEL_KEY:
+        return [validate_model_from_list(requested, allowed)]
+    cached = _IMAGE_MODEL_CACHE.get(capability)
+    candidates = []
+    if cached in allowed:
+        candidates.append(cached)
+    candidates.extend(model for model in allowed if model not in candidates)
+    if not candidates:
+        validate_model_from_list('', allowed)
+    return candidates
 
 
 def upload_generated_image(image_url: str, openid: str) -> dict:
@@ -151,6 +182,40 @@ def create_image(model: str, input_payload: dict, size: str, openid: str) -> dic
     return result
 
 
+def create_image_auto(capability: str, requested_model: str | None, input_payload: dict, size: str, openid: str) -> tuple[dict, str]:
+    candidates = ordered_candidates(capability, requested_model)
+    last_error: ai_service.DashScopeError | None = None
+    logger.info(
+        'ai_create_image_auto_start openid=%s capability=%s requested=%s candidates=%s',
+        openid,
+        capability,
+        requested_model or AUTO_MODEL_KEY,
+        candidates,
+    )
+    for candidate in candidates:
+        try:
+            result = create_image(candidate, input_payload, size, openid)
+            _IMAGE_MODEL_CACHE[capability] = candidate
+            logger.info('ai_create_image_auto_success openid=%s capability=%s model=%s', openid, capability, candidate)
+            return result, candidate
+        except ai_service.DashScopeFreeQuotaExhausted as exc:
+            last_error = exc
+            logger.warning('ai_create_image_auto_quota_exhausted openid=%s capability=%s model=%s', openid, capability, candidate)
+        except ai_service.DashScopeError as exc:
+            last_error = exc
+            logger.warning(
+                'ai_create_image_auto_candidate_failed openid=%s capability=%s model=%s code=%s message=%s',
+                openid,
+                capability,
+                candidate,
+                exc.code,
+                exc.message,
+            )
+    if last_error:
+        raise last_error
+    raise ai_service.DashScopeError('No available image model')
+
+
 def raise_ai_error(exc: ai_service.DashScopeError):
     logger.warning('ai_provider_error code=%s message=%s', exc.code, exc.message)
     if isinstance(exc, ai_service.DashScopeFreeQuotaExhausted):
@@ -174,6 +239,15 @@ def raise_ai_error(exc: ai_service.DashScopeError):
 
 @router.get('/models')
 def ai_models(user=Depends(require_module('ai_suite'))):
+    text_to_image_models = vision_models('textToImage')
+    image_to_image_models = vision_models('imageToImage')
+    logger.info(
+        'ai_models_resolved openid=%s llm=%s vision=%s audio=%s',
+        user['openid'],
+        settings.llm_model_list(),
+        text_to_image_models,
+        settings.audio_model_list(),
+    )
     return {
         'code': 200,
         'success': True,
@@ -181,20 +255,20 @@ def ai_models(user=Depends(require_module('ai_suite'))):
             'freeQuotaNote': '仅接入阿里百炼免费额度模型，免费额度用完即止。',
             'models': {
                 'chat': {
-                    'default': settings.default_model(settings.ai_chat_models),
-                    'options': model_options(settings.ai_chat_models),
+                    'default': settings.default_model(','.join(settings.llm_model_list())),
+                    'options': option_items(settings.llm_model_list()),
                 },
                 'textToImage': {
-                    'default': settings.default_vision_model('textToImage'),
-                    'options': option_items(settings.vision_model_list('textToImage')),
+                    'default': AUTO_MODEL_KEY if text_to_image_models else '',
+                    'options': auto_option_items(text_to_image_models) if text_to_image_models else [],
                 },
                 'imageToImage': {
-                    'default': settings.default_vision_model('imageToImage'),
-                    'options': option_items(settings.vision_model_list('imageToImage')),
+                    'default': AUTO_MODEL_KEY if image_to_image_models else '',
+                    'options': auto_option_items(image_to_image_models) if image_to_image_models else [],
                 },
                 'transcription': {
-                    'default': settings.default_model(settings.ai_transcription_models),
-                    'options': model_options(settings.ai_transcription_models),
+                    'default': settings.default_model(','.join(settings.audio_model_list())),
+                    'options': option_items(settings.audio_model_list()),
                 },
             },
             'capabilities': [
@@ -216,7 +290,7 @@ def ai_chat(payload: ChatPayload, user=Depends(require_module('ai_suite'))):
     if len(message) > 4000:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Message is too long')
     check_text_security(message, user['openid'])
-    model = validate_model(payload.model, settings.ai_chat_models)
+    model = validate_model_from_list(payload.model, settings.llm_model_list())
     messages = [
         {
             'role': 'system',
@@ -247,10 +321,10 @@ def text_to_image(payload: TextToImagePayload, user=Depends(require_module('ai_s
     if len(prompt) > 800:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Prompt is too long')
     check_text_security(prompt, user['openid'])
-    model = validate_model_from_list(payload.model, settings.vision_model_list('textToImage'))
-    logger.info('ai_text_to_image_request openid=%s model=%s prompt_len=%s size=%s', user['openid'], model, len(prompt), payload.size or settings.ai_image_size)
+    requested_model = payload.model or AUTO_MODEL_KEY
+    logger.info('ai_text_to_image_request openid=%s model=%s prompt_len=%s size=%s', user['openid'], requested_model, len(prompt), payload.size or settings.ai_image_size)
     try:
-        result = create_image(model, {'prompt': prompt}, payload.size or settings.ai_image_size, user['openid'])
+        result, used_model = create_image_auto('textToImage', requested_model, {'prompt': prompt}, payload.size or settings.ai_image_size, user['openid'])
     except ai_service.DashScopeError as exc:
         record_event(user['openid'], 'ai_suite', 'text_to_image', False, str(exc))
         raise_ai_error(exc)
@@ -263,7 +337,7 @@ def text_to_image(payload: TextToImagePayload, user=Depends(require_module('ai_s
             'downloadUrlExpiresIn': result['downloadUrlExpiresIn'],
             'downloadUrlExpiresAt': result['downloadUrlExpiresAt'],
             'objectKey': result['objectKey'],
-            'model': model,
+            'model': used_model,
         },
     }
 
@@ -290,12 +364,11 @@ async def image_to_image(
     if not looks_like_image(data):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only image files are supported')
     check_image_security(data, file.filename or 'input.png', content_type)
-    selected_model = validate_model_from_list(model, settings.vision_model_list('imageToImage'))
     source = storage_service.upload_bytes(data, safe_filename('ai-source', content_type), content_type, AI_IMAGE_DIR)
     logger.info(
         'ai_image_to_image_source_uploaded openid=%s model=%s content_type=%s bytes=%s object_key=%s download_host=%s',
         user['openid'],
-        selected_model,
+        model or AUTO_MODEL_KEY,
         content_type,
         len(data),
         source.get('objectKey'),
@@ -307,8 +380,9 @@ async def image_to_image(
         'base_image_url': source['downloadUrl'],
     }
     try:
-        result = create_image(
-            selected_model,
+        result, used_model = create_image_auto(
+            'imageToImage',
+            model or AUTO_MODEL_KEY,
             image_input,
             size or settings.ai_image_size,
             user['openid'],
@@ -325,7 +399,7 @@ async def image_to_image(
             'downloadUrlExpiresIn': result['downloadUrlExpiresIn'],
             'downloadUrlExpiresAt': result['downloadUrlExpiresAt'],
             'objectKey': result['objectKey'],
-            'model': selected_model,
+            'model': used_model,
         },
     }
 
@@ -344,7 +418,7 @@ async def transcribe_audio(
     source_name = Path(file.filename or '').name or safe_filename('audio', content_type)
     if not is_audio_upload(source_name, content_type, data):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Only audio files are supported')
-    selected_model = validate_model(model, settings.ai_transcription_models)
+    selected_model = validate_model_from_list(model, settings.audio_model_list())
     source = storage_service.upload_bytes(data, source_name, content_type, AI_AUDIO_DIR)
     logger.info(
         'ai_transcribe_source_uploaded openid=%s model=%s content_type=%s bytes=%s object_key=%s download_host=%s',

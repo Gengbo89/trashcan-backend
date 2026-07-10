@@ -81,16 +81,18 @@ DASHSCOPE_API_KEY=your-bailian-api-key
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com
 DASHSCOPE_SERVICE_URL=https://dashscope.aliyuncs.com/api/v1
 DASHSCOPE_COMPATIBLE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-AI_CHAT_MODELS=qwen-turbo,qwen-plus,qwen-long
-AI_VISION_MODELS=wanx2.1-t2i-turbo:textToImage,wanx2.1-imageedit:imageToImage
-AI_TRANSCRIPTION_MODELS=paraformer-v2
+AI_LLM_MODELS=qwen-turbo,qwen-plus,qwen-long
+AI_VISION_MODELS=
+AI_AUDIO_MODELS=paraformer-v2
 ```
 
 The first logged-in user is also promoted to admin automatically, which is convenient for initial setup. Admins can open the mini program's `我的 -> 权限管理` page to enable or disable modules for each user. The upload APIs require the `file_transfer` module permission.
 
 ## AI Tools
 
-AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. Chat uses `DASHSCOPE_COMPATIBLE_URL`; image generation and speech transcription use `DASHSCOPE_SERVICE_URL`. Keep `DASHSCOPE_SERVICE_URL` on the standard DashScope service endpoint unless your custom Model Studio host explicitly supports `/services/...` APIs. The model list is configured with comma-separated `AI_*_MODELS` values. The first model in each list is used as the default model shown in the mini program. Visual models share `AI_VISION_MODELS`; add a capability suffix such as `:textToImage`, `:imageToImage`, or `:textToImage|imageToImage` to control which mini program entry can select the model.
+AI tools are proxied by the backend under `/ai/*`, so the mini program never stores the Alibaba Cloud Model Studio API key. Chat uses `DASHSCOPE_COMPATIBLE_URL`; image generation and speech transcription use `DASHSCOPE_SERVICE_URL`. Keep `DASHSCOPE_SERVICE_URL` on the standard DashScope service endpoint unless your custom Model Studio host explicitly supports `/services/...` APIs.
+
+Models are configured only by broad category: `AI_LLM_MODELS`, `AI_VISION_MODELS`, and `AI_AUDIO_MODELS`. The backend handles capability probing inside a category. For visual generation, both text-to-image and image-to-image use `AI_VISION_MODELS`; the backend tries candidates in order, skips failed candidates, and caches the first successful model per capability.
 
 Generated images are downloaded by the backend, checked by the existing image safety flow, uploaded to RustFS, and returned as 1-hour presigned links.
 
